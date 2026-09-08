@@ -9,56 +9,46 @@
  * OSInit dereferences it on its second line to find OSBootInfo.
  *
  * Rather than rewrite every such site, we map real pages at the addresses the
- * game already uses. The console's 24MB of main RAM appears twice in its
- * address space: cached at 0x80000000 and uncached at 0xC0000000. Both are
- * mapped here so OSCachedToUncached() arithmetic stays valid.
+ * game already uses. Main RAM appears twice in the console's address space,
+ * cached at 0x80000000 and uncached at 0xC0000000, and both are mapped so
+ * OSCachedToUncached() arithmetic stays valid. The two views are the same RAM
+ * on hardware; here they are independent regions, which holds while nothing
+ * depends on a write through one being visible through the other. Sharing them
+ * properly needs one memfd mapped twice.
  *
- * The two views are genuinely the same RAM on hardware. This maps them as two
- * independent regions, which is fine while nothing relies on a write through
- * one view being visible through the other. Sharing them properly needs a
- * single memfd mapped twice; do that when something depends on it.
+ * The hardware register range at 0xCC000000 is mapped too. hw_regs.h places
+ * the video, processor interface, memory controller, DSP, disc, serial, EXI
+ * and audio blocks between 0xCC002000 and 0xCC006C00, and VIInit reads
+ * __VIRegs[1] almost immediately. Ordinary pages only stop the fault: reads
+ * return the last value written rather than device state, so code polling a
+ * status bit will spin rather than crash. Devices get intercepted individually
+ * as boot reaches them.
  */
-#include <stdio.h>
-#include <sys/mman.h>
-#include <stdint.h>
+#include "pc_sys.h"
 
 #define GC_RAM_CACHED   0x80000000UL
 #define GC_RAM_UNCACHED 0xC0000000UL
 #define GC_RAM_SIZE     (24u << 20) /* retail GameCube main RAM */
 
-/* Memory-mapped hardware registers. hw_regs.h places the video, processor
-   interface, memory controller, DSP, disc, serial, EXI and audio blocks
-   between 0xCC002000 and 0xCC006C00. VIInit reads __VIRegs[1] almost
-   immediately, so the range has to be addressable before boot gets anywhere.
-   Backing it with ordinary pages only stops the fault -- reads return whatever
-   was last written rather than real device state, so code that polls a status
-   bit will spin instead of crashing. Devices that matter get intercepted
-   individually as they come up. */
-#define GC_MMIO_BASE    0xCC000000UL
-#define GC_MMIO_SIZE    (64u << 10)
+#define GC_MMIO_BASE 0xCC000000UL
+#define GC_MMIO_SIZE (64u << 10)
 
-static int map_fixed(unsigned long at, unsigned long size, const char* what)
+static int map_or_report(unsigned long at, unsigned long size, const char* what)
 {
-    void* p = mmap((void*) at, size, PROT_READ | PROT_WRITE,
-                   MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
-    if (p == MAP_FAILED || (unsigned long) p != at) {
-        fprintf(stderr, "pc_memory: could not map %s at 0x%lx\n", what, at);
-        return 0;
+    if (pc_sys_map_fixed(at, size)) {
+        return 1;
     }
-    /* No memset here: MAP_ANONYMOUS pages arrive zero-filled from the kernel,
-       and calling memset would bind to the decomp's own MSL implementation
-       (__fill_mem), which is linked into this binary and shadows the host's. */
-    return 1;
+    pc_sys_log("pc_memory: could not map ");
+    pc_sys_log(what);
+    pc_sys_log("\n");
+    return 0;
 }
 
-/* Runs before main(). The game's own main() is the entry point, so there is
-   no earlier hook to use. */
-__attribute__((constructor(101))) static void pc_memory_init(void)
+/* Runs before main(). The game owns main(), so there is no earlier hook. */
+__attribute__((constructor(101))) void pc_memory_init(void)
 {
-    if (!map_fixed(GC_RAM_CACHED, GC_RAM_SIZE, "cached RAM")) return;
-    if (!map_fixed(GC_RAM_UNCACHED, GC_RAM_SIZE, "uncached RAM")) return;
-    if (!map_fixed(GC_MMIO_BASE, GC_MMIO_SIZE, "hardware registers")) return;
-    fprintf(stderr, "pc_memory: %u MB RAM at 0x%lx / 0x%lx, %u KB MMIO at 0x%lx\n",
-            GC_RAM_SIZE >> 20, GC_RAM_CACHED, GC_RAM_UNCACHED,
-            GC_MMIO_SIZE >> 10, GC_MMIO_BASE);
+    if (!map_or_report(GC_RAM_CACHED, GC_RAM_SIZE, "cached RAM")) return;
+    if (!map_or_report(GC_RAM_UNCACHED, GC_RAM_SIZE, "uncached RAM")) return;
+    if (!map_or_report(GC_MMIO_BASE, GC_MMIO_SIZE, "hardware registers")) return;
+    pc_sys_log("pc_memory: mapped 24 MB RAM and 64 KB MMIO\n");
 }

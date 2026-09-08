@@ -25,11 +25,13 @@ rm -rf "$OUT"; mkdir -p "$OUT/obj"
 # -fgnu89-inline matches how MWCC treats the `extern inline` math helpers;
 # without it GCC emits one copy per translation unit and they collide.
 CFLAGS="$BITS -w -c -O0 -fgnu89-inline -fno-strict-aliasing"
+LDFLAGS="-lm"
+FREESTANDING=0
 # MWCC builds with -cwd source, so a file's own directory is searched for
 # quoted includes. GCC does that too, but the Dolphin sources also reach
 # sideways -- vi.c includes "__gx.h" from the gx directory -- so every source
 # subdirectory goes on the path.
-INCLUDES="-I src -I extern/dolphin/include -I extern/dolphin/include/libc -I extern/dolphin/src"
+INCLUDES="-I src -I extern/dolphin/include -I extern/dolphin/include/libc -I extern/dolphin/src -I pc/src"
 
 # -m32 is the real target. Compiling there works anywhere via the freestanding
 # fallback (see survey.sh), but LINKING additionally needs 32-bit crt and libc
@@ -37,12 +39,22 @@ INCLUDES="-I src -I extern/dolphin/include -I extern/dolphin/include/libc -I ext
 # early and say so rather than emitting a wall of ld errors.
 if [ "$BITS" = "-m32" ]; then
   if ! echo '#include <stdio.h>' | "$CC" -m32 -x c -fsyntax-only - 2>/dev/null; then
-    INCLUDES="-nostdinc -I tools/phase0/freestanding -I $("$CC" -print-file-name=include) $INCLUDES -I src/MSL"
+    # src/MSL precedes the freestanding headers deliberately. It is the decomp's
+    # own standard library -- string.c, printf.c, strtoul.c, math.c and trigf.c
+    # implement what the game calls -- and those sources only compile against
+    # their own declarations. tools/phase0/freestanding then fills the gaps MSL
+    # does not cover, rather than shadowing what it does.
+    INCLUDES="-nostdinc -I src/MSL -I tools/phase0/freestanding -I $("$CC" -print-file-name=include) $INCLUDES"
   fi
+  # Where 32-bit crt and libc libraries are missing, link freestanding instead
+  # of giving up: -nostdlib with our own _start and raw syscalls. src/MSL
+  # already supplies memcpy, printf, the string routines and most of the math,
+  # so pc_libc.c only has to add sqrt, sqrtf, floor and atanf.
   if ! echo 'int main(void){return 0;}' | "$CC" -m32 -x c -o /dev/null - 2>/dev/null; then
-    echo "error: -m32 linking needs 32-bit crt/libc libraries (apt install gcc-multilib)." >&2
-    echo "       survey.sh -m32 still works; only this script needs the libraries." >&2
-    exit 1
+    echo "note: no 32-bit libc; linking freestanding (-nostdlib)"
+    FREESTANDING=1
+    CFLAGS="$CFLAGS -fno-stack-protector -DPC_FREESTANDING"
+    LDFLAGS="-nostdlib -static"
   fi
 fi
 for d in $(find extern/dolphin/src -type d); do INCLUDES="$INCLUDES -I $d"; done
@@ -66,7 +78,7 @@ compile_one() {
     -DVERSION_GALE01 -DBUILD_VERSION=0 "$f" -o "$o" 2>/dev/null
 }
 export -f compile_one
-export CC CFLAGS INCLUDES OUT
+export CC CFLAGS INCLUDES OUT FREESTANDING
 
 echo "Compiling ($CC $BITS)..."
 find src extern pc/src -name '*.c' | grep -vE "$EXCLUDE" \
@@ -77,7 +89,7 @@ echo "  objects: $(find "$OUT/obj" -name '*.o' | wc -l)"
 # alone over-reports: it does not know the host libc supplies sinf, printf,
 # mmap and friends, and stubbing those shadows the real implementations.
 # shellcheck disable=SC2086
-"$CC" $BITS -o /dev/null "$OUT"/obj/*.o -lm 2>&1 \
+"$CC" $BITS -o /dev/null "$OUT"/obj/*.o $LDFLAGS 2>&1 \
   | grep -oE "undefined reference to \`[^']*'" \
   | sed "s/.*\`//; s/'//" | sort -u > "$OUT/todo.txt"
 
@@ -86,10 +98,12 @@ import sys
 out = sys.argv[1]
 syms = [l.strip() for l in open(f'{out}/todo.txt') if l.strip()]
 with open(f'{out}/stubs.c', 'w') as f:
+    # No includes: these are plain char arrays, and a freestanding build has
+    # no header search path to satisfy one with.
     f.write('/* Placeholders for symbols nothing provides -- neither the tree nor\n'
             '   the host libc. Sized generously and untyped, since the linker\n'
             '   cannot say what is code and what is data. Calling one crashes,\n'
-            '   which is the point: that is where boot stops. */\n#include <stddef.h>\n')
+            '   which is the point: that is where boot stops. */\n')
     for s in syms:
         f.write(f'__attribute__((aligned(16))) char {s}[4096];\n')
 print(f'  placeholders: {len(syms)}')
@@ -97,10 +111,10 @@ PY
 
 cd "$ROOT"
 # shellcheck disable=SC2086
-"$CC" $BITS -w -c "$OUT/stubs.c" -o "$OUT/stubs.o"
+"$CC" $BITS -w -c ${FREESTANDING:+-nostdinc -fno-stack-protector} "$OUT/stubs.c" -o "$OUT/stubs.o"
 echo "Linking..."
 # shellcheck disable=SC2086
-if "$CC" $BITS -o "$OUT/melee_host" "$OUT"/obj/*.o "$OUT/stubs.o" -lm 2>"$OUT/link.log"; then
+if "$CC" $BITS -o "$OUT/melee_host" "$OUT"/obj/*.o "$OUT/stubs.o" $LDFLAGS 2>"$OUT/link.log"; then
   echo "  linked: $(du -h "$OUT/melee_host" | cut -f1)"
 else
   echo "  LINK FAILED — see $OUT/link.log"; head -5 "$OUT/link.log"; exit 1

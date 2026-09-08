@@ -37,7 +37,12 @@ INCLUDES="-I src -I extern/dolphin/include -I extern/dolphin/include/libc -I ext
 if [ "$BITS" = "-m32" ] && ! echo '#include <stdio.h>' \
      | "$CC" -m32 -x c -fsyntax-only - 2>/dev/null; then
   echo "note: no 32-bit libc headers; using tools/phase0/freestanding"
-  INCLUDES="-nostdinc -I tools/phase0/freestanding -I $("$CC" -print-file-name=include) $INCLUDES -I src/MSL"
+  # src/MSL precedes the freestanding headers deliberately. It is the decomp's
+    # own standard library -- string.c, printf.c, strtoul.c, math.c and trigf.c
+    # implement what the game calls -- and those sources only compile against
+    # their own declarations. tools/phase0/freestanding then fills the gaps MSL
+    # does not cover, rather than shadowing what it does.
+    INCLUDES="-nostdinc -I src/MSL -I tools/phase0/freestanding -I $("$CC" -print-file-name=include) $INCLUDES"
 fi
 # The Dolphin sources reach sideways for private headers -- vi.c includes
 # "__gx.h" from the gx directory -- which MWCC resolves via -cwd source.

@@ -10,8 +10,7 @@
  * their neighbours compile cleanly and are used as-is -- OSInit below drives
  * the real arena rather than keeping its own.
  */
-#include <stdint.h>
-#include <stdio.h>
+#include "pc_sys.h"
 
 typedef unsigned int u32;
 typedef int BOOL;
@@ -57,7 +56,7 @@ void OSInit(void)
     OSSetArenaLo((void*) ARENA_LO);
     OSSetArenaHi((void*) ARENA_HI);
 
-    OSReport("pc_os: arena %p .. %p (%u MB)\n",
-             OSGetArenaLo(), OSGetArenaHi(),
-             (unsigned) ((ARENA_HI - ARENA_LO) >> 20));
+    /* OSReport routes through MSL's printf, which is not wired to an output
+       device yet, so announce this over the host log instead. */
+    pc_sys_log("pc_os: arena set, 23 MB\n");
 }

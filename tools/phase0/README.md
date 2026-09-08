@@ -234,7 +234,7 @@ already width-correct under `-m32`.
 
 | | `-m64` | `-m32` |
 |---|---|---|
-| Compiles clean | 1088 / 1182 (92%) | **1124 / 1182 (95%)** |
+| Compiles clean | 1088 / 1182 (92%) | **1136 / 1182 (96%)** |
 | Game-code failures | 40 | **0** |
 | **Layout assertion failures** | **~180** | **0** |
 
@@ -268,3 +268,56 @@ fix, neither of which changes behaviour:
 > host portability is not worth losing the match.
 
 The remaining 59 failures are MWCC assembly syntax
+
+---
+
+# The -m32 build is sound, and boots
+
+`linkexe.sh -m32` no longer needs `gcc-multilib`. Where 32-bit crt and libc
+libraries are missing it links **freestanding** -- `-nostdlib -static`, with
+`pc/src/pc_sys_freestanding.c` supplying `_start` and raw Linux syscalls.
+
+That is only affordable because the decomp carries its own standard library.
+With `src/MSL` ahead of the freestanding headers, MSL's `string.c`, `printf.c`,
+`strtoul.c`, `math.c` and `trigf.c` all build and provide what the game calls.
+Exactly four routines are left over -- `sqrt`, `sqrtf`, `floor` and `atanf` --
+and `pc/src/pc_libc.c` adds them. The first three are single x86 instructions
+via GCC builtins; `atanf` is a polynomial approximation and is flagged in that
+file as **not bit-identical** to the Metrowerks original, which matters for a
+deterministic fighting game and should be replaced before anything depends on
+frame-exact behaviour.
+
+```
+objects: 1121      placeholders: 187      linked: 11M
+
+pc_memory: mapped 24 MB RAM and 64 KB MMIO
+pc_os: arena set, 23 MB
+SIGSEGV in __OSSetInterruptHandler ()  <- from VIInit(), from main()
+```
+
+**This run is trustworthy in a way the -m64 one is not.** `u32` is 4 bytes,
+struct layouts match, and pointers do not sign-extend. Placeholders fall from
+730 to 187 for the same reason: most of what looked missing under `-m64` was
+simply files that could not compile there.
+
+Boot is also further along. The `-m64` build dies inside `__VIInit` at
+`vi.c:294` on a sign-extended address -- an artifact, not a bug. The `-m32`
+build clears that entirely and stops at `__OSSetInterruptHandler`, which is a
+placeholder because `OSInterrupt.c` has not been made to build yet. A real
+gap, in other words, rather than a mirage.
+
+## Three things a freestanding link needs that a hosted one hides
+
+- **`-fno-stack-protector`.** GCC's canary loads from `%gs:0x14`, and nothing
+  sets up TLS without a C runtime. Without this, every function faults in its
+  own prologue.
+- **A realigned stack.** The kernel enters `_start` with `%esp` pointing at
+  `argc`, 4-byte aligned, while the i386 ABI promises 16. GCC relies on that
+  promise and will emit an aligned SSE store into a local. The entry point is
+  therefore top-level assembly that masks `%esp` before calling anything -- a C
+  function cannot fix this, because its own prologue already ran on the bad
+  stack.
+- **Constructors called by name.** `.init_array` is walked by the C runtime,
+  and a `-nostdlib -static` link does not even emit the section bounds, so
+  `pc_start_c` calls `pc_memory_init` directly. Any future initializer has to
+  join that list.

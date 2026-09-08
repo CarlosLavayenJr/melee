@@ -25,8 +25,16 @@ enum FloatType {
 
 static inline s32 __fpclassifyf(float x)
 {
+    /* A `const` object is not a constant expression in C, so it cannot appear
+       in a case label -- MWCC accepts it, other C compilers do not. Enum
+       constants are constant expressions everywhere, so use those off MWCC and
+       leave the original spelling alone where it has to match. */
+#ifdef __MWERKS__
     const s32 exp_mask = 0x7F800000;
     const s32 mantissa_mask = 0x007FFFFF;
+#else
+    enum { exp_mask = 0x7F800000, mantissa_mask = 0x007FFFFF };
+#endif
     switch ((*(s32*) &x) & exp_mask) {
     case exp_mask:
         return ((*(s32*) &x) & mantissa_mask) ? FP_NAN : FP_INFINITE;
