@@ -14,6 +14,21 @@
 # Usage: tools/phase0/linkexe.sh [-m32|-m64]
 set -uo pipefail
 
+# --trace-gx links pc/src/pc_gx_trace.c over a curated set of GX entry points,
+# using ld --wrap so neither the SDK nor the game is modified. It reports the
+# shape of each frame -- primitives, display lists, textures, TEV stages --
+# which is the specification a renderer has to satisfy.
+TRACE_GX=0
+ARGS=""
+for a in "$@"; do
+  case "$a" in
+    --trace-gx) TRACE_GX=1 ;;
+    *) ARGS="$ARGS $a" ;;
+  esac
+done
+# shellcheck disable=SC2086
+set -- $ARGS
+
 CC="${CC:-gcc}"
 BITS="${1:--m64}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -78,7 +93,16 @@ for d in $(find extern/dolphin/src -type d); do INCLUDES="$INCLUDES -I $d"; done
 # MSL/printf.c is excluded too: it compiles but is written against MWCC's
 # varargs intrinsics (__builtin_va_info), which have no host counterpart.
 # pc/src/pc_printf.c replaces it.
-EXCLUDE='dolphin/stub\.c|amcstubs|odemustubs|MetroTRK|dolphin/os/OS(Interrupt|Alarm|Time|Cache|Context|Reset|ResetSW|Thread)?\.c|MSL/printf\.c|dolphin/pad/pad\.c|dolphin/ar/ar\.c|dolphin/dsp/dsp(_task)?\.c|dolphin/dvd/dvdlow\.c'
+WRAPPED="GXBegin GXCallDisplayList GXLoadTexObj GXSetTevOrder GXSetProjection GXLoadPosMtxImm GXCopyDisp"
+if [ "$TRACE_GX" = 1 ]; then
+  for w in $WRAPPED; do LDFLAGS="$LDFLAGS -Wl,--wrap=$w"; done
+else
+  # Without the flags the wrappers are dead weight and their __real_ references
+  # would not resolve, so the recorder is left out of the build entirely.
+  EXCLUDE_TRACE='pc/src/pc_gx_trace\.c|'
+fi
+
+EXCLUDE="${EXCLUDE_TRACE:-}"'dolphin/stub\.c|amcstubs|odemustubs|MetroTRK|dolphin/os/OS(Interrupt|Alarm|Time|Cache|Context|Reset|ResetSW|Thread)?\.c|MSL/printf\.c|dolphin/pad/pad\.c|dolphin/ar/ar\.c|dolphin/dsp/dsp(_task)?\.c|dolphin/dvd/dvdlow\.c'
 
 compile_one() {
   local f="$1" o

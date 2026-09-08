@@ -410,3 +410,42 @@ that request. It is enough to boot and it leaves every caller's control flow
 intact. A port that wants real pacing -- vsync, a fixed timestep -- takes the
 loop back, and `OSSleepThread` in `pc_os_thread.c` is where that gets undone.
 
+
+
+---
+
+# Recording what the game tries to draw
+
+There is no renderer. GXInit returns, the game configures the GPU and issues
+geometry, and all of it lands in a write-gather FIFO nothing reads. Building a
+renderer blind means guessing which of GX's ~114 entry points matter for a
+first frame.
+
+`tools/phase0/linkexe.sh -m32 --trace-gx` answers that empirically. A curated
+set of GX calls is intercepted at link time -- `ld --wrap=GXBegin` sends
+callers to `pc/src/pc_gx_trace.c` and leaves the original reachable as
+`__real_GXBegin` -- so neither the SDK nor the game is modified, and dropping
+the flags drops the recorder.
+
+Even with only a synthetic disc, it shows the game already reaching the frame
+boundary:
+
+```
+gx: GXSetTevOrder stage=0 map=0
+gx: GXSetTevOrder stage=1 map=1
+gx: GXSetTevOrder stage=2 map=2
+gx: GXSetTevOrder stage=3 map=3
+gx: frame 0 -- 0 prims (0 verts), 0 display lists (0 bytes),
+              0 textures, 16 tev stages, 1 matrices
+```
+
+`GXCopyDisp` is the frame boundary, so **the render loop is already turning** --
+sixteen TEV stages configured and a matrix loaded, with no geometry because
+there are no assets to draw.
+
+With a real disc this becomes the renderer's specification: how many primitives
+of which kind, how many display lists and how large, how many texture binds.
+Melee draws nearly everything through `GXCallDisplayList`, replaying command
+streams precompiled into the `.dat` files, so that counter in particular says
+how much of the work is display-list interpretation rather than immediate-mode
+drawing.
