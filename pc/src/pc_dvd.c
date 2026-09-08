@@ -255,26 +255,42 @@ static void name_copy(char* dst, const char* src, unsigned int cap)
  * Returns the number of groups walked, which the trace reports: short of the
  * expected count means a stride left the buffer, and the assumption is wrong.
  */
+#define SFX_PREFIX_BYTES 0x10
+
 static unsigned int swap_group_counts(unsigned char* addr, unsigned int length,
-                                      unsigned int groups)
+                                      unsigned int groups,
+                                      const pc_u32* prefix)
 {
-    unsigned int off = 0, g;
+    /* Stream coordinates, not buffer ones. The loader does not start its walk
+       at this buffer: it copies four header words out ahead of the data and
+       begins there (synth.c, where HSD_Synth_804D7734 is set), so the first
+       0x10 bytes of the stream are those words and this buffer supplies
+       everything from 0x10 on. Walking the buffer as if it began with a count
+       reads eight bytes into a record instead. */
+    unsigned int total = SFX_PREFIX_BYTES + length;
+    unsigned int pos = 0, g;
 
     for (g = 0; g < groups; g++) {
         unsigned int n;
 
-        if (off + 8 > length) {
-            break;
+        if (pos + 8 <= SFX_PREFIX_BYTES) {
+            /* Still in the header words, which were swapped with the header
+               itself and need no second pass. */
+            n = prefix[pos / 4];
+        } else if (pos >= SFX_PREFIX_BYTES && pos + 8 <= total) {
+            unsigned char* w = addr + (pos - SFX_PREFIX_BYTES);
+            n = be32(w);
+            *(pc_u32*) w = n;
+        } else {
+            break; /* straddles the join, or runs off the end */
         }
-        n = be32(addr + off);
-        *(pc_u32*) (addr + off) = n;
         /* Divide rather than multiply: a count straight off the disc can pick
            a value whose product with the record size wraps. */
-        if (n > (length - off - 8) / 0x40) {
-            g++; /* this count was swapped; the stride past it is what fails */
+        if (n > (total - pos - 8) / 0x40) {
+            g++; /* this count was read; the stride past it is what fails */
             break;
         }
-        off += n * 0x40 + 8;
+        pos += n * 0x40 + 8;
     }
     return g;
 }
@@ -285,24 +301,32 @@ static unsigned int swap_group_counts(unsigned char* addr, unsigned int length,
    name so a mismatched pairing converts nothing. */
 static char sfx_name[64];
 static unsigned int sfx_groups;
+static pc_u32 sfx_prefix[4];
 
 /* Returns 1 when a schema claimed the read, 0 when the format is still
    unconverted. */
 static int swap_contents(const char* name, unsigned int rel,
                          unsigned char* addr, unsigned int length)
 {
+    unsigned int i;
+
     if (name_ends_with(name, ".ssm")) {
         if (rel == 0 && length >= SFX_HEADER_BYTES) {
             swap_words(addr, SFX_HEADER_BYTES / 4);
-            /* Word two is the group count; the table read needs it. */
+            /* Word two is the group count. Words four to seven are the head
+               of the group stream, which the loader copies out ahead of the
+               table; the walk over that table has to start from them. */
             sfx_groups = ((const pc_u32*) addr)[2];
+            for (i = 0; i < 4; i++) {
+                sfx_prefix[i] = ((const pc_u32*) addr)[4 + i];
+            }
             name_copy(sfx_name, name, sizeof sfx_name);
             return 1;
         }
         if (rel == SFX_HEADER_BYTES && sfx_groups != 0 &&
             name_eq(name, sfx_name)) {
             unsigned int walked =
-                swap_group_counts(addr, length, sfx_groups);
+                swap_group_counts(addr, length, sfx_groups, sfx_prefix);
 #ifdef PC_DVD_TRACE
             pc_sys_log("dvd: groups ");
             log_uint(walked);
