@@ -10,7 +10,6 @@
  * their neighbours compile cleanly and are used as-is -- OSInit below drives
  * the real arena rather than keeping its own.
  */
-#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 
@@ -22,6 +21,9 @@ extern void  OSSetArenaLo(void* lo);
 extern void  OSSetArenaHi(void* hi);
 extern void* OSGetArenaLo(void);
 extern void* OSGetArenaHi(void);
+
+/* Provided by OSError.c, which builds unmodified. */
+extern void OSReport(const char* fmt, ...);
 
 #define GC_RAM_CACHED 0x80000000UL
 #define GC_RAM_SIZE   (24u << 20) /* retail GameCube main RAM */
@@ -41,14 +43,6 @@ u32 OSGetConsoleSimulatedMemSize(void) { return GC_RAM_SIZE; }
 BOOL OSDisableInterrupts(void)       { return 0; }
 BOOL OSEnableInterrupts(void)        { return 0; }
 BOOL OSRestoreInterrupts(BOOL level) { (void) level; return 0; }
-
-void OSReport(const char* fmt, ...)
-{
-    va_list ap;
-    va_start(ap, fmt);
-    vfprintf(stderr, fmt, ap);
-    va_end(ap);
-}
 
 void OSInit(void)
 {

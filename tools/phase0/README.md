@@ -177,6 +177,53 @@ look at.
 Melee addresses memory by absolute GameCube addresses -- `OSPhysicalToCached(0)`
 expands to the literal pointer `0x80000000`. Rather than rewrite every such
 site, `pc/src/pc_memory.c` maps real pages at those addresses before `main()`
-runs, so the game's own pointer arithmetic stays valid. This works on Linux
-x86-64 today; a Windows port needs the equivalent `VirtualAlloc(MEM_RESERVE)`
-at the same base.
+runs, so the game's own pointer arithmetic stays valid. It maps main RAM at
+`0x80000000` and `0xC0000000` and the hardware register range at `0xCC000000`,
+because `VIInit` reads `__VIRegs[1]` almost immediately.
+
+Backing MMIO with ordinary pages only stops the fault. Reads return whatever
+was last written rather than real device state, so code that polls a status bit
+will spin rather than crash. Devices get intercepted individually as boot
+reaches them.
+
+This works on Linux x86-64 today; a Windows port needs the equivalent
+`VirtualAlloc(MEM_RESERVE)` at the same base.
+
+---
+
+# Why -m32 is mandatory, not a preference
+
+`extern/dolphin/include/dolphin/types.h` defines the base widths as
+
+```c
+typedef signed long s32;
+typedef unsigned long u32;
+```
+
+`long` is 4 bytes in the GameCube's 32-bit ABI, so this is correct there and on
+any ILP32 host. On an **LP64** host `long` is 8 bytes, and the consequences are
+not subtle:
+
+- Every `u32`/`s32` **struct field doubles in width**, so every layout that the
+  200 `ASSERT_SIZE`/`offsetof` guards describe is wrong.
+- `(u32)` casts stop truncating. `OS_BASE_CACHED` is `(0x8000 << 16)`, which is
+  a *negative* `int`; widening it to 64 bits sign-extends, so
+  `OSPhysicalToCached(0xCC)` yields `0xffffffff800000cc` instead of
+  `0x800000cc`. That is the crash at `vi.c:294`.
+
+Pinning `s32`/`u32` to `int` for non-PowerPC targets fixes the sign extension
+but does not fix the codebase: the Dolphin headers also spell the same types
+as bare `unsigned long` in a dozen places (`OSRtc.h`, `OSThread.h`, `pad.h`,
+`perf.h`, `demo.h`, ...), which then conflict with the `u32` spellings in
+`os.h`. Trying it drops the build from 1062 objects to 81. It was reverted.
+
+**So the `-m64` numbers in this document prove the pipeline, not the port.**
+The build compiles, links, and boots into real game code, which is what they
+were for. Anything depending on struct layout or pointer width is invalid until
+the same run happens under `-m32` -- which is the real target anyway, and what
+ACGC-PC-Port uses (`mingw-w64-i686`).
+
+Install `gcc-multilib` and run `tools/phase0/survey.sh -m32`. If the layout
+assertions pass there, struct compatibility between MWCC/PowerPC and the host
+is *proven* rather than assumed, and that is the single most valuable unknown
+this harness can retire.

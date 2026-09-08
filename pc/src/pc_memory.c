@@ -26,6 +26,17 @@
 #define GC_RAM_UNCACHED 0xC0000000UL
 #define GC_RAM_SIZE     (24u << 20) /* retail GameCube main RAM */
 
+/* Memory-mapped hardware registers. hw_regs.h places the video, processor
+   interface, memory controller, DSP, disc, serial, EXI and audio blocks
+   between 0xCC002000 and 0xCC006C00. VIInit reads __VIRegs[1] almost
+   immediately, so the range has to be addressable before boot gets anywhere.
+   Backing it with ordinary pages only stops the fault -- reads return whatever
+   was last written rather than real device state, so code that polls a status
+   bit will spin instead of crashing. Devices that matter get intercepted
+   individually as they come up. */
+#define GC_MMIO_BASE    0xCC000000UL
+#define GC_MMIO_SIZE    (64u << 10)
+
 static int map_fixed(unsigned long at, unsigned long size, const char* what)
 {
     void* p = mmap((void*) at, size, PROT_READ | PROT_WRITE,
@@ -46,6 +57,8 @@ __attribute__((constructor(101))) static void pc_memory_init(void)
 {
     if (!map_fixed(GC_RAM_CACHED, GC_RAM_SIZE, "cached RAM")) return;
     if (!map_fixed(GC_RAM_UNCACHED, GC_RAM_SIZE, "uncached RAM")) return;
-    fprintf(stderr, "pc_memory: mapped %u MB at 0x%lx and 0x%lx\n",
-            GC_RAM_SIZE >> 20, GC_RAM_CACHED, GC_RAM_UNCACHED);
+    if (!map_fixed(GC_MMIO_BASE, GC_MMIO_SIZE, "hardware registers")) return;
+    fprintf(stderr, "pc_memory: %u MB RAM at 0x%lx / 0x%lx, %u KB MMIO at 0x%lx\n",
+            GC_RAM_SIZE >> 20, GC_RAM_CACHED, GC_RAM_UNCACHED,
+            GC_MMIO_SIZE >> 10, GC_MMIO_BASE);
 }

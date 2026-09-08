@@ -25,7 +25,12 @@ rm -rf "$OUT"; mkdir -p "$OUT/obj"
 # -fgnu89-inline matches how MWCC treats the `extern inline` math helpers;
 # without it GCC emits one copy per translation unit and they collide.
 CFLAGS="$BITS -w -c -O0 -fgnu89-inline -fno-strict-aliasing"
+# MWCC builds with -cwd source, so a file's own directory is searched for
+# quoted includes. GCC does that too, but the Dolphin sources also reach
+# sideways -- vi.c includes "__gx.h" from the gx directory -- so every source
+# subdirectory goes on the path.
 INCLUDES="-I src -I extern/dolphin/include -I extern/dolphin/include/libc -I extern/dolphin/src"
+for d in $(find extern/dolphin/src -type d); do INCLUDES="$INCLUDES -I $d"; done
 
 # stub.c / amcstubs / odemustubs are alternative implementations the real build
 # chooses between (see the Object() list in configure.py); MetroTRK is the

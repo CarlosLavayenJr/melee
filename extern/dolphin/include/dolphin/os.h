@@ -71,8 +71,19 @@ u32 __OSBusClock : (OS_BASE_CACHED | 0x00F8);
 u32 __OSCoreClock : (OS_BASE_CACHED | 0x00FC);
 int __EXIProbeStartTime[2] : (OS_BASE_CACHED | 0x30C0);
 #else
+/* MWCC's `type name : address` places a variable at a fixed address. Other
+   compilers have no such syntax, so each becomes a dereference of that same
+   address. These are only usable once something has mapped the console's
+   address range -- see pc/src/pc_memory.c. */
+#define __OSPhysicalMemSize (*(u32*) (OS_BASE_CACHED | 0x0028))
+#define __OSTVMode (*(volatile int*) (OS_BASE_CACHED | 0x00CC))
+#define __gUnkThread1 (*(OSThread**) (OS_BASE_CACHED | 0x00D8))
+#define __OSActiveThreadQueue (*(OSThreadQueue*) (OS_BASE_CACHED | 0x00DC))
+#define __gCurrentThread (*(OSThread**) (OS_BASE_CACHED | 0x00E4))
+#define __OSSimulatedMemSize (*(u32*) (OS_BASE_CACHED | 0x00F0))
 #define __OSBusClock (*(u32*) (OS_BASE_CACHED | 0x00F8))
 #define __OSCoreClock (*(u32*) (OS_BASE_CACHED | 0x00FC))
+#define __EXIProbeStartTime ((int*) (OS_BASE_CACHED | 0x30C0))
 #endif
 #define OS_BUS_CLOCK __OSBusClock
 #define OS_CORE_CLOCK __OSCoreClock

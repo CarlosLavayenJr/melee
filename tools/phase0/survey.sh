@@ -26,6 +26,9 @@ mkdir -p "$OUT/logs"
 # the subshells that xargs spawns, and the decomp's own libc must precede the
 # host's on the include path or its math.h loses to glibc's.
 INCLUDES="-I src -I extern/dolphin/include -I extern/dolphin/include/libc -I extern/dolphin/src"
+# The Dolphin sources reach sideways for private headers -- vi.c includes
+# "__gx.h" from the gx directory -- which MWCC resolves via -cwd source.
+for d in $(find extern/dolphin/src -type d); do INCLUDES="$INCLUDES -I $d"; done
 
 compile_one() {
   local f="$1"
