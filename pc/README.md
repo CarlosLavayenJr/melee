@@ -36,7 +36,7 @@ the wrong layout, so nothing it does can be trusted. See
 ```sh
 sudo apt install gcc-multilib          # if you have it; see the note below
 tools/phase0/linkexe.sh -m32
-cp /path/to/your/melee.iso game.iso
+cp /path/to/your/melee.iso game.iso     # in the repo root, where you are
 ./build/phase2/melee_host
 ```
 
@@ -52,7 +52,7 @@ Install [MSYS2](https://www.msys2.org/), then from the **MINGW32** shell:
 ```sh
 pacman -S mingw-w64-i686-gcc python
 CC=i686-w64-mingw32-gcc tools/phase0/linkexe.sh -m32
-cp /path/to/your/melee.iso game.iso
+cp /path/to/your/melee.iso game.iso     # in the repo root, where you are
 ./build/phase2/melee_host.exe
 ```
 
@@ -69,10 +69,22 @@ Windows machine.
 
 ### Where the disc image goes
 
-Beside the binary you run, named `game.iso`. `melee.iso`, `disc.iso`,
-`game.gcm` and `melee.gcm` also work. Without one the game still boots — it
-just finds an empty file system, which is what a console with a blank disc
-would do.
+**In the directory you run the program from**, not next to the binary. The
+paths are relative, so they resolve against the working directory:
+
+```sh
+cd /path/to/melee          # the repo root
+cp ~/melee.iso game.iso    # here, beside where you are standing
+./build/phase2/melee_host  # not `cd build/phase2 && ./melee_host`
+```
+
+`melee.iso`, `disc.iso`, `game.gcm` and `melee.gcm` work as names too. Without
+an image the game still boots — it finds an empty file system, which is what a
+console with a blank disc would do, and says so:
+
+```
+pc_dvd: no disc image found; file system stays empty
+```
 
 ---
 
