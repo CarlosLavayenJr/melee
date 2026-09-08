@@ -20,4 +20,12 @@ void pc_sys_exit(int code);
 /* Nanoseconds from a monotonic source. Only differences are meaningful. */
 unsigned long long pc_sys_mono_ns(void);
 
+/* Read-only file access, for the disc image. Returns a handle, or -1.
+   Reads are positional so the caller keeps no file offset of its own -- which
+   suits DVDLowRead, whose every request carries an absolute disc offset. */
+int pc_sys_open_ro(const char* path);
+long pc_sys_pread(int fd, void* buf, unsigned long len,
+                  unsigned long long offset);
+void pc_sys_close(int fd);
+
 #endif

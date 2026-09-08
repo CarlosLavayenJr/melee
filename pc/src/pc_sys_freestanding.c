@@ -11,6 +11,10 @@
 #define SYS_write  4
 #define SYS_mmap2 192
 #define SYS_clock_gettime 265
+#define SYS_open   5
+#define SYS_close  6
+#define SYS_pread64 180
+#define O_RDONLY   0
 #define CLOCK_MONOTONIC 1
 
 #define PROT_READ  0x1
@@ -61,6 +65,24 @@ unsigned long long pc_sys_mono_ns(void)
            (unsigned long long) ts.nsec;
 }
 
+int pc_sys_open_ro(const char* path)
+{
+    long r = sys(SYS_open, (long) path, O_RDONLY, 0, 0, 0, 0);
+    return (r < 0 && r > -4096) ? -1 : (int) r;
+}
+
+long pc_sys_pread(int fd, void* buf, unsigned long len,
+                  unsigned long long offset)
+{
+    /* i386 pread64 takes the 64-bit offset as a low/high register pair. */
+    long r = sys(SYS_pread64, fd, (long) buf, (long) len,
+                 (long) (unsigned long) (offset & 0xFFFFFFFFu),
+                 (long) (unsigned long) (offset >> 32), 0);
+    return (r < 0 && r > -4096) ? -1 : r;
+}
+
+void pc_sys_close(int fd) { sys(SYS_close, fd, 0, 0, 0, 0, 0); }
+
 void pc_sys_exit(int code)
 {
     sys(SYS_exit, code, 0, 0, 0, 0, 0);
@@ -82,11 +104,13 @@ extern int main(void);
    is called by name. Any future initializer belongs in this list too. */
 extern void pc_memory_init(void);
 extern void pc_bootinfo_init(void);
+extern int pc_dvd_mount(void);
 
 void pc_start_c(void)
 {
     pc_memory_init();
     pc_bootinfo_init(); /* must follow the mapping, precede main() */
+    pc_dvd_mount();     /* replaces the empty file system when a disc exists */
     pc_sys_exit(main());
 }
 

@@ -7,6 +7,8 @@
 #include <stdlib.h>
 #include <sys/mman.h>
 #include <time.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 int pc_sys_map_fixed(unsigned long at, unsigned long size)
 {
@@ -25,5 +27,15 @@ unsigned long long pc_sys_mono_ns(void)
 
 void pc_sys_log(const char* s) { fputs(s, stderr); }
 void pc_sys_exit(int code)     { exit(code); }
+
+int pc_sys_open_ro(const char* path) { return open(path, O_RDONLY); }
+
+long pc_sys_pread(int fd, void* buf, unsigned long len,
+                  unsigned long long offset)
+{
+    return (long) pread(fd, buf, (size_t) len, (off_t) offset);
+}
+
+void pc_sys_close(int fd) { close(fd); }
 
 #endif

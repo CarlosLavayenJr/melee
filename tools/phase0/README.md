@@ -321,8 +321,40 @@ to. And the read is bad for the honest reason: `pc_bootinfo.c` publishes an
 empty file system, so there are no files to load.
 
 **Every subsystem `main()` initialises now returns, and the port stops exactly
-where a console with a blank disc would.** Going further means giving the DVD
-layer a real disc image to read.
+where a console with a blank disc would.**
+
+## Giving it a disc
+
+`pc/src/pc_dvd.c` replaces `dvdlow.c` -- the bottom of the DVD stack, which
+programs the drive registers. Everything above it (`dvd.c`'s state machine,
+`dvdfs.c`'s path lookups, `dvdqueue.c`) is ordinary logic and compiles
+unmodified, so the SDK reaches a file without knowing anything changed.
+
+Put a disc image beside the binary as `game.iso` (or `melee.iso`, `disc.iso`,
+`game.gcm`, `melee.gcm`) and it is mounted at startup:
+
+```
+pc_dvd: mounted game.iso
+pc_dvd: file system table, 2 entries
+```
+
+Three big-endian words at 0x420 in the disc header name the executable, the
+file system table and its size. The FST is 12-byte entries followed by a string
+table; entry zero is the root, and its third word is the entry count, which is
+how the table's own length is found. On hardware the IPL copies this into
+memory and leaves a pointer in OSBootInfo; `pc_dvd_mount` does that here, so
+`dvdfs.c` finds a populated file system where `pc_bootinfo.c` left an empty one.
+
+**This is where byte order stops being avoidable.** The disc is big-endian
+because the console is. The FST is the easy case -- a fixed schema of three
+32-bit words per entry, so swapping it is a loop, and the string table after it
+is bytes. File *contents* are the hard case: every `.dat` the game loads is
+full of big-endian floats and pointers, and swapping those needs a schema per
+format. That work starts where this file ends.
+
+The layer was verified against a synthetic 12 KB disc built to the documented
+format -- header, a two-entry FST, one file -- which is why the entry count
+above reads 2. Real assets need a real disc.
 
 ## What the pc/ layer covers so far
 
