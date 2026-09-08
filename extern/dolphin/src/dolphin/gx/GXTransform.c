@@ -113,6 +113,59 @@ void GXGetProjectionv(f32* ptr)
     ptr[6] = gx->projMtx[5];
 }
 
+/* These four push a matrix into the write-gather FIFO. Every store targets the
+ * same address -- `dest` is the pipe's port, not a buffer -- so each is simply
+ * a sequence of floats written in order. On PowerPC that is done two at a time
+ * with paired-single loads and stores, which is why the originals are
+ * assembly; off it, an ordinary loop writes the identical sequence.
+ *
+ * The element order each one emits is preserved exactly, since the transform
+ * unit reads them positionally.
+ */
+#ifndef __MWERKS__
+
+static void WriteMTXPS4x3(f32 mtx[3][4], volatile f32* dest)
+{
+    int i, j;
+    for (i = 0; i < 3; i++) {
+        for (j = 0; j < 4; j++) {
+            *dest = mtx[i][j];
+        }
+    }
+}
+
+static void WriteMTXPS3x3from3x4(f32 mtx[3][4], volatile f32* dest)
+{
+    int i, j;
+    for (i = 0; i < 3; i++) {
+        for (j = 0; j < 3; j++) { /* the 3x3 part, skipping the translation */
+            *dest = mtx[i][j];
+        }
+    }
+}
+
+static void WriteMTXPS3x3(f32 mtx[3][3], volatile f32* dest)
+{
+    int i, j;
+    for (i = 0; i < 3; i++) {
+        for (j = 0; j < 3; j++) {
+            *dest = mtx[i][j];
+        }
+    }
+}
+
+static void WriteMTXPS4x2(f32 mtx[2][4], volatile f32* dest)
+{
+    int i, j;
+    for (i = 0; i < 2; i++) {
+        for (j = 0; j < 4; j++) {
+            *dest = mtx[i][j];
+        }
+    }
+}
+
+#else
+
 static asm void WriteMTXPS4x3(register f32 mtx[3][4],
                               register volatile f32* dest)
 {
@@ -182,6 +235,8 @@ static asm void WriteMTXPS4x2(register f32 mtx[2][4],
     psq_st f3, 0(dest), 0, qr0
     // clang-format on
 }
+
+#endif /* __MWERKS__ */
 
 #define GX_WRITE_MTX_ELEM(addr, value)                                        \
     do {                                                                      \

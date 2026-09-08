@@ -10,6 +10,8 @@
  */
 #include "pc_libc.h"
 
+#include <stddef.h> /* NULL */
+
 double sqrt(double x)  { return __builtin_sqrt(x); }
 float  sqrtf(float x)  { return __builtin_sqrtf(x); }
 double floor(double x) { return __builtin_floor(x); }
@@ -48,4 +50,67 @@ float atanf(float x)
         r = pi_2 - r;
     }
     return x < 0.0f ? -r : r;
+}
+
+/* --- 64-bit division helpers ---
+ *
+ * On a 32-bit target the compiler lowers 64-bit division to calls into libgcc.
+ * A -nostdlib link does not have it, and the host's libgcc.a is the wrong
+ * architecture, so the three routines the code generator actually emits are
+ * provided here. OSGetTime is the first caller: it scales a nanosecond count
+ * into the console's tick rate.
+ *
+ * Plain restoring division, one bit at a time. Correctness matters more than
+ * speed -- nothing on a hot path divides 64-bit values.
+ */
+static unsigned long long udivmod64(unsigned long long n, unsigned long long d,
+                                    unsigned long long* rem)
+{
+    unsigned long long q = 0;
+    unsigned long long r = 0;
+    int i;
+
+    if (d == 0) {
+        if (rem != NULL) {
+            *rem = 0;
+        }
+        return 0; /* undefined; do not fault */
+    }
+
+    for (i = 63; i >= 0; i--) {
+        r = (r << 1) | ((n >> i) & 1u);
+        if (r >= d) {
+            r -= d;
+            q |= 1ull << i;
+        }
+    }
+    if (rem != NULL) {
+        *rem = r;
+    }
+    return q;
+}
+
+unsigned long long __udivdi3(unsigned long long a, unsigned long long b)
+{
+    return udivmod64(a, b, 0);
+}
+
+unsigned long long __umoddi3(unsigned long long a, unsigned long long b)
+{
+    unsigned long long r;
+    udivmod64(a, b, &r);
+    return r;
+}
+
+long long __divdi3(long long a, long long b)
+{
+    int negative = 0;
+    unsigned long long ua, ub, q;
+
+    if (a < 0) { a = -a; negative = !negative; }
+    if (b < 0) { b = -b; negative = !negative; }
+    ua = (unsigned long long) a;
+    ub = (unsigned long long) b;
+    q = udivmod64(ua, ub, 0);
+    return negative ? -(long long) q : (long long) q;
 }

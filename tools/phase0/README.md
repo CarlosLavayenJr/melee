@@ -292,8 +292,17 @@ objects: 1125      placeholders: 154      linked: 11M
 
 pc_memory: mapped 24 MB RAM and 64 KB MMIO
 pc_os: arena set, 23 MB
-SIGSEGV in GXInit ()  <- from main()
+pc_memory: mapped 24 MB RAM and 64 KB MMIO
+pc_os: arena set, 23 MB
+app booted from bootrom          <- the game's own OSReport
 ```
+
+**It no longer crashes.** That third line is Melee printing its own boot
+message. The process now runs until it spins inside `__ARChecksize`, the
+audio-RAM size probe, which walks addresses looking for the point where writes
+wrap -- and never converges, because MMIO reads return whatever was last
+written. That is the stall `pc_memory.c` warns about, arriving exactly where
+predicted.
 
 `main()` opens with
 
@@ -313,7 +322,11 @@ arena_size = (intptr_t) OSGetArenaHi() - (intptr_t) OSGetArenaLo();   /* ok */
 HSD_SetInitParameter(...);                                            /* ok */
 db_SetupCrashHandler();                                               /* ok */
 HSD_AllocateXFB(2, &GXNtsc480IntDf);                                  /* ok */
-HSD_GXSetFifoObj(GXInit(HSD_AllocateFifo(0x40000), 0x40000));         /* here */
+HSD_GXSetFifoObj(GXInit(HSD_AllocateFifo(0x40000), 0x40000));         /* ok */
+HSD_InitComponent();                                                  /* ok */
+GXSetMisc(1, 8);                                                      /* ok */
+*seed_ptr = OSGetTick();                                              /* ok */
+lbAudioAx_8002838C();                                                 /* spins */
 ```
 
 `db_GetGameLaunchButtonState` polls the controller and waits a full video

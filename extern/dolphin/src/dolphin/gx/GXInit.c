@@ -19,12 +19,19 @@ u32 *__piReg;
 GXBool __GXinBegin;
 #endif
 
+/* Reads bit 0 of the write-gather pipe address register, which the hardware
+   sets while the pipe still holds queued data. A host has no such pipe -- see
+   pc/src/pc_ppc.c -- so there is never anything in flight to wait for. */
+#ifdef __MWERKS__
 asm BOOL IsWriteGatherBufferEmpty(void)
 {
     sync
     mfspr r3, WPAR
     andi. r3, r3, 1
 }
+#else
+BOOL IsWriteGatherBufferEmpty(void) { return TRUE; }
+#endif
 
 static void EnableWriteGatherPipe(void)
 {

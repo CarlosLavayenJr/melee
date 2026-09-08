@@ -42,7 +42,12 @@ if [ "$BITS" = "-m32" ] && ! echo '#include <stdio.h>' \
     # implement what the game calls -- and those sources only compile against
     # their own declarations. tools/phase0/freestanding then fills the gaps MSL
     # does not cover, rather than shadowing what it does.
-    INCLUDES="-nostdinc -I src/MSL -I tools/phase0/freestanding -I $("$CC" -print-file-name=include) $INCLUDES"
+    # extern/dolphin/include/libc precedes src/MSL. Both ship a math.h, but
+    # MSL's pulls in Runtime/platform.h, which deliberately #undefs BOOL, TRUE
+    # and FALSE -- and SDK sources like gx/GXDraw.c still use them. MSL's own
+    # sources are unaffected by the order because they include their headers
+    # with quotes, which searches their directory first.
+    INCLUDES="-nostdinc -I extern/dolphin/include/libc -I src/MSL -I tools/phase0/freestanding -I $("$CC" -print-file-name=include) $INCLUDES"
 fi
 # The Dolphin sources reach sideways for private headers -- vi.c includes
 # "__gx.h" from the gx directory -- which MWCC resolves via -cwd source.

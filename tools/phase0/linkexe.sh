@@ -44,7 +44,12 @@ if [ "$BITS" = "-m32" ]; then
     # implement what the game calls -- and those sources only compile against
     # their own declarations. tools/phase0/freestanding then fills the gaps MSL
     # does not cover, rather than shadowing what it does.
-    INCLUDES="-nostdinc -I src/MSL -I tools/phase0/freestanding -I $("$CC" -print-file-name=include) $INCLUDES"
+    # extern/dolphin/include/libc precedes src/MSL. Both ship a math.h, but
+    # MSL's pulls in Runtime/platform.h, which deliberately #undefs BOOL, TRUE
+    # and FALSE -- and SDK sources like gx/GXDraw.c still use them. MSL's own
+    # sources are unaffected by the order because they include their headers
+    # with quotes, which searches their directory first.
+    INCLUDES="-nostdinc -I extern/dolphin/include/libc -I src/MSL -I tools/phase0/freestanding -I $("$CC" -print-file-name=include) $INCLUDES"
   fi
   # Where 32-bit crt and libc libraries are missing, link freestanding instead
   # of giving up: -nostdlib with our own _start and raw syscalls. src/MSL
