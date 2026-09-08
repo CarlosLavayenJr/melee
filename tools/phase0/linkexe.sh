@@ -31,6 +31,10 @@ CFLAGS="$BITS -w -c -O0 -fgnu89-inline -fno-strict-aliasing"
 # subdirectory goes on the path.
 INCLUDES="-I src -I extern/dolphin/include -I extern/dolphin/include/libc -I extern/dolphin/src"
 for d in $(find extern/dolphin/src -type d); do INCLUDES="$INCLUDES -I $d"; done
+# src/MSL holds the Metrowerks standard library headers the game includes
+# directly -- <printf.h>, <setjmp.h>, <wchar.h>. It goes last so its math.h and
+# ctype.h do not shadow the decomp's own under extern/dolphin/include/libc.
+INCLUDES="$INCLUDES -I src/MSL"
 
 # stub.c / amcstubs / odemustubs are alternative implementations the real build
 # chooses between (see the Object() list in configure.py); MetroTRK is the

@@ -234,8 +234,8 @@ already width-correct under `-m32`.
 
 | | `-m64` | `-m32` |
 |---|---|---|
-| Compiles clean | 1080 / 1182 (91%) | **1103 / 1182 (93%)** |
-| Game-code failures | 40 | **11** |
+| Compiles clean | 1080 / 1182 (91%) | **1123 / 1182 (95%)** |
+| Game-code failures | 40 | **0** |
 | **Layout assertion failures** | **~180** | **0** |
 
 **All 200 `ASSERT_SIZE`/`offsetof` guards pass under `-m32`.** GCC's x86 32-bit
@@ -244,9 +244,27 @@ codebase checks. Struct packing was the one risk a compiler could not be
 trusted to catch and the one most likely to produce silent garbage rather than
 errors; it is now measured rather than assumed.
 
-The remaining 79 failures are MWCC assembly syntax -- `asm void` bodies,
-register parameters, `@ha`/`@l` relocation operators -- and 59 of them are in
-SDK/libc files a port replaces anyway. Only 11 game-code files remain:
-`lbcardnew.c`, seven under `gr/`, the two `textlib` files, and `efalt.c`
-(which uses MWCC's `__va_arg` idiom from `src/MSL/stdarg.h`).
+All 908 files under `src/melee` now compile. Reaching that took two kinds of
+fix, neither of which changes behaviour:
 
+- **`src/MSL` joined the include path.** The game includes `<printf.h>`,
+  `<setjmp.h>` and `<wchar.h>` directly, and those are the Metrowerks standard
+  library headers already sitting in `src/MSL`. It goes last so its `math.h`
+  and `ctype.h` do not shadow the decomp's own.
+- **Seven header/definition mismatches were reconciled.** `grlib.h` declared
+  `int grLib_801C9EE8` against a `bool` definition; `lbcardnew.h`,
+  `grkinokoroute.h`, `grkraid.h`, `grlast.c`, `grshrineroute.c` and
+  `grtzelda.c` had the same disagreement in one direction or the other. MWCC
+  accepts these because its `bool` and `int` are compatible; GCC's `_Bool` is
+  not. In each case the declaration was changed to match the definition.
+- `efalt.c` got a host branch for MWCC's `__va_arg` idiom, whose
+  `src/MSL/stdarg.h` version returns a pointer to the argument slot where the
+  standard `va_arg` returns the value.
+
+> **These seven need checking against a matching build.** They are the only
+> changes in this harness that touch declarations the MWCC build also reads.
+> Rebuild and confirm `build/GALE01/main.dol` still hashes to
+> `08e0bf20134dfcb260699671004527b2d6bb1a45`; if it does not, revert them --
+> host portability is not worth losing the match.
+
+The remaining 59 failures are MWCC assembly syntax

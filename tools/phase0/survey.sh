@@ -42,6 +42,10 @@ fi
 # The Dolphin sources reach sideways for private headers -- vi.c includes
 # "__gx.h" from the gx directory -- which MWCC resolves via -cwd source.
 for d in $(find extern/dolphin/src -type d); do INCLUDES="$INCLUDES -I $d"; done
+# src/MSL holds the Metrowerks standard library headers the game includes
+# directly -- <printf.h>, <setjmp.h>, <wchar.h>. It goes last so its math.h and
+# ctype.h do not shadow the decomp's own under extern/dolphin/include/libc.
+INCLUDES="$INCLUDES -I src/MSL"
 
 compile_one() {
   local f="$1"

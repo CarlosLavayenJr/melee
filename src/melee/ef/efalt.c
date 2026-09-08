@@ -1,6 +1,7 @@
 #include "efalt.h"
 
 #include <math.h>
+#include <stdarg.h>
 #include <placeholder.h>
 
 #include "eflib.h"
@@ -9,7 +10,14 @@
 #include <sysdolphin/baselib/gobj.h>
 #include <sysdolphin/baselib/jobj.h>
 
+/* MWCC's __va_arg (src/MSL/stdarg.h) returns a pointer to the argument slot,
+   so the value is reached by casting and dereferencing. The standard va_arg
+   returns the value directly, making the same fetch a single call. */
+#ifdef __MWERKS__
 #define EFALT_VA_ARG(t) (*((t*) __va_arg(vlist_arg, _var_arg_typeof(t))))
+#else
+#define EFALT_VA_ARG(t) va_arg(vlist, t)
+#endif
 
 extern volatile u32 efLib_LoadKind;
 extern volatile s32 efLib_AnimCount;
