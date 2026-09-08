@@ -65,25 +65,32 @@ static const char* const disc_paths[] = {
     "game.iso", "melee.iso", "disc.iso", "game.gcm", "melee.gcm", 0
 };
 
-static u32 be32(const unsigned char* p)
+static unsigned int be32(const unsigned char* p)
 {
-    return ((u32) p[0] << 24) | ((u32) p[1] << 16) | ((u32) p[2] << 8) |
-           (u32) p[3];
+    return ((unsigned int) p[0] << 24) | ((unsigned int) p[1] << 16) |
+           ((unsigned int) p[2] << 8) | (unsigned int) p[3];
 }
 
+/* On-disk and low-memory layouts use explicit widths, never the SDK's u32.
+   dolphin/types.h defines u32 as `unsigned long`, which is four bytes in the
+   GameCube's ABI and eight on an LP64 host -- so a struct built from it
+   silently doubles in size there, and a table walked with its sizeof reads
+   garbage. These describe bytes on a disc, so they are pinned. */
+typedef unsigned int pc_u32;
+
 typedef struct {
-    u32 isDirAndStringOff;
-    u32 parentOrPosition;
-    u32 nextEntryOrLength;
+    pc_u32 isDirAndStringOff;
+    pc_u32 parentOrPosition;
+    pc_u32 nextEntryOrLength;
 } pc_fst_entry;
 
 typedef struct {
     unsigned char diskID[0x20];
-    u32 magic, version, memorySize, consoleType;
+    pc_u32 magic, version, memorySize, consoleType;
     void* arenaLo;
     void* arenaHi;
     void* FSTLocation;
-    u32 FSTMaxLength;
+    pc_u32 FSTMaxLength;
 } pc_boot_info;
 
 /* Opens the disc image and publishes its file system table. Returns 0 when no
@@ -94,7 +101,7 @@ int pc_dvd_mount(void)
     pc_boot_info* info = (pc_boot_info*) GC_RAM_CACHED;
     unsigned char header[0x440];
     unsigned char* fst = (unsigned char*) PC_FST_ADDR;
-    u32 fst_offset, fst_size, entries, i;
+    unsigned int fst_offset, fst_size, entries, i;
     int p;
 
     for (p = 0; disc_paths[p] != 0; p++) {
@@ -132,7 +139,11 @@ int pc_dvd_mount(void)
     /* Entry zero's third word is the entry count, and it needs swapping before
        it can say how much of what follows is entries rather than names. */
     entries = be32(fst + 8);
-    if (entries == 0 || entries * sizeof(pc_fst_entry) > fst_size) {
+    /* Divide rather than multiply: the entry count comes straight off the disc,
+       so a corrupt or hostile image can pick a value whose product with the
+       entry size wraps a 32-bit multiply and passes a bounds check it should
+       fail. Dividing the known-good size cannot overflow. */
+    if (entries == 0 || entries > fst_size / sizeof(pc_fst_entry)) {
         pc_sys_log("pc_dvd: file system table is malformed\n");
         return 0;
     }
@@ -140,8 +151,8 @@ int pc_dvd_mount(void)
     /* Swap the entries in place; the string table after them is bytes. */
     for (i = 0; i < entries * 3; i++) {
         unsigned char* w = fst + i * 4;
-        u32 v = be32(w);
-        *(u32*) w = v;
+        pc_u32 v = be32(w);
+        *(pc_u32*) w = v;
     }
 
     /* The disc ID the SDK checks lives in the first 0x20 bytes. */
@@ -156,7 +167,7 @@ int pc_dvd_mount(void)
        lookup fails much later for reasons that look unrelated. */
     {
         char msg[64];
-        u32 n = entries;
+        unsigned int n = entries;
         int len = 0, j;
         const char* pre = "pc_dvd: file system table, ";
         for (j = 0; pre[j] != 0; j++) {

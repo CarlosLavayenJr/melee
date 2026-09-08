@@ -98,19 +98,15 @@ void pc_sys_exit(int code)
  * dereference. */
 extern int main(void);
 
-/* pc_memory_init is a constructor, which a hosted build reaches through
-   .init_array. Nothing walks that array here, and the section bounds the
-   linker would normally supply are absent from a -nostdlib -static link, so it
-   is called by name. Any future initializer belongs in this list too. */
-extern void pc_memory_init(void);
-extern void pc_bootinfo_init(void);
-extern int pc_dvd_mount(void);
+/* A hosted build reaches the startup sequence through .init_array, which the
+   C runtime walks. Nothing walks it here -- a -nostdlib -static link does not
+   even emit the section bounds -- so pc_init_all is called by name. It is the
+   same function either way, which is what keeps the two modes in step. */
+extern void pc_init_all(void);
 
 void pc_start_c(void)
 {
-    pc_memory_init();
-    pc_bootinfo_init(); /* must follow the mapping, precede main() */
-    pc_dvd_mount();     /* replaces the empty file system when a disc exists */
+    pc_init_all();
     pc_sys_exit(main());
 }
 

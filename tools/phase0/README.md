@@ -356,6 +356,15 @@ The layer was verified against a synthetic 12 KB disc built to the documented
 format -- header, a two-entry FST, one file -- which is why the entry count
 above reads 2. Real assets need a real disc.
 
+## On-disk layouts never use the SDK's u32
+
+`dolphin/types.h` defines `u32` as `unsigned long`: four bytes in the
+GameCube's ABI, eight on an LP64 host. A struct built from it therefore doubles
+in size there, and a table walked with its `sizeof` reads garbage. `pc_dvd.c`
+and `pc_bootinfo.c` describe bytes on a disc and a fixed low-memory block, so
+they pin their widths explicitly instead. This is the same trap that makes
+`-m32` mandatory for the game's own code, and it reaches port code too.
+
 ## What the pc/ layer covers so far
 
 | File | Replaces | Notes |

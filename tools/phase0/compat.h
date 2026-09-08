@@ -14,7 +14,13 @@
 #ifndef PHASE0_COMPAT_H
 #define PHASE0_COMPAT_H
 
+/* Suppressing glibc's ssize_t leaves the name undefined for any translation
+   unit that does not also pull in Runtime/platform.h -- pc/src/pc_sys_hosted.c
+   reaches <unistd.h> without it. Define the same type here so the suppression
+   is self-contained. platform.h's identical typedef is a legal redefinition. */
 #define __ssize_t_defined
+typedef signed int ssize_t;
+
 #define _USE_MATH_DEFINES
 
 #include <stdint.h>

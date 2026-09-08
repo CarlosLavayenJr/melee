@@ -44,8 +44,11 @@ static int map_or_report(unsigned long at, unsigned long size, const char* what)
     return 0;
 }
 
-/* Runs before main(). The game owns main(), so there is no earlier hook. */
-__attribute__((constructor(101))) void pc_memory_init(void)
+/* Called by pc_init_all(), which owns the startup ordering for both link
+   modes. Deliberately not a constructor of its own: the steps that follow it
+   depend on this having run, and only one of the two modes runs constructors
+   at all. */
+void pc_memory_init(void)
 {
     if (!map_or_report(GC_RAM_CACHED, GC_RAM_SIZE, "cached RAM")) return;
     if (!map_or_report(GC_RAM_UNCACHED, GC_RAM_SIZE, "uncached RAM")) return;

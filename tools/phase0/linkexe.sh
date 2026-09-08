@@ -27,6 +27,7 @@ rm -rf "$OUT"; mkdir -p "$OUT/obj"
 CFLAGS="$BITS -w -c -O0 -fgnu89-inline -fno-strict-aliasing"
 LDFLAGS="-lm"
 FREESTANDING=0
+STUBFLAGS=""
 # MWCC builds with -cwd source, so a file's own directory is searched for
 # quoted includes. GCC does that too, but the Dolphin sources also reach
 # sideways -- vi.c includes "__gx.h" from the gx directory -- so every source
@@ -59,6 +60,7 @@ if [ "$BITS" = "-m32" ]; then
     echo "note: no 32-bit libc; linking freestanding (-nostdlib)"
     FREESTANDING=1
     CFLAGS="$CFLAGS -fno-stack-protector -DPC_FREESTANDING"
+    STUBFLAGS="-nostdinc -fno-stack-protector"
     LDFLAGS="-nostdlib -static"
   fi
 fi
@@ -86,7 +88,7 @@ compile_one() {
     -DVERSION_GALE01 -DBUILD_VERSION=0 "$f" -o "$o" 2>/dev/null
 }
 export -f compile_one
-export CC CFLAGS INCLUDES OUT FREESTANDING
+export CC CFLAGS INCLUDES OUT FREESTANDING STUBFLAGS
 
 echo "Compiling ($CC $BITS)..."
 find src extern pc/src -name '*.c' | grep -vE "$EXCLUDE" \
@@ -119,7 +121,11 @@ PY
 
 cd "$ROOT"
 # shellcheck disable=SC2086
-"$CC" $BITS -w -c ${FREESTANDING:+-nostdinc -fno-stack-protector} "$OUT/stubs.c" -o "$OUT/stubs.o"
+# STUBFLAGS rather than ${FREESTANDING:+...}: that form expands whenever the
+# variable is set and non-empty, and FREESTANDING is always set -- to 0 in the
+# hosted case -- so it applied the freestanding flags to both.
+# shellcheck disable=SC2086
+"$CC" $BITS -w -c $STUBFLAGS "$OUT/stubs.c" -o "$OUT/stubs.o"
 echo "Linking..."
 # shellcheck disable=SC2086
 if "$CC" $BITS -o "$OUT/melee_host" "$OUT"/obj/*.o "$OUT/stubs.o" $LDFLAGS 2>"$OUT/link.log"; then

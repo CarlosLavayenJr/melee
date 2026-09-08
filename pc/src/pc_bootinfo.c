@@ -22,25 +22,30 @@
 
 #define GC_RAM_CACHED 0x80000000UL
 
-/* Mirrors OSBootInfo in dolphin/os.h, which cannot be included here: this file
-   is built before the SDK headers are usable in a freestanding link. */
+/* Mirrors OSBootInfo in dolphin/os.h and struct FSTEntry in dvd/dvdfs.c, which
+   cannot be included here: this file runs before the SDK headers are usable in
+   a freestanding link.
+   Widths are explicit rather than `unsigned long`, which is four bytes in the
+   GameCube's ABI and eight on an LP64 host -- these describe a fixed memory
+   layout the SDK reads back, so they cannot follow the host's word size. */
+typedef unsigned int pc_u32;
+
 typedef struct {
     unsigned char diskID[0x20];
-    unsigned long magic;
-    unsigned long version;
-    unsigned long memorySize;
-    unsigned long consoleType;
+    pc_u32 magic;
+    pc_u32 version;
+    pc_u32 memorySize;
+    pc_u32 consoleType;
     void* arenaLo;
     void* arenaHi;
     void* FSTLocation;
-    unsigned long FSTMaxLength;
+    pc_u32 FSTMaxLength;
 } pc_boot_info;
 
-/* Mirrors struct FSTEntry in dvd/dvdfs.c. */
 typedef struct {
-    unsigned long isDirAndStringOff;
-    unsigned long parentOrPosition;
-    unsigned long nextEntryOrLength;
+    pc_u32 isDirAndStringOff;
+    pc_u32 parentOrPosition;
+    pc_u32 nextEntryOrLength;
 } pc_fst_entry;
 
 /* Somewhere in low memory above OSBootInfo and below the arena. */
