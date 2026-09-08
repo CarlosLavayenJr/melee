@@ -223,7 +223,30 @@ were for. Anything depending on struct layout or pointer width is invalid until
 the same run happens under `-m32` -- which is the real target anyway, and what
 ACGC-PC-Port uses (`mingw-w64-i686`).
 
-Install `gcc-multilib` and run `tools/phase0/survey.sh -m32`. If the layout
-assertions pass there, struct compatibility between MWCC/PowerPC and the host
-is *proven* rather than assumed, and that is the single most valuable unknown
-this harness can retire.
+## Result under -m32: struct layout is compatible
+
+`tools/phase0/survey.sh -m32` now runs without `gcc-multilib`. When 32-bit libc
+headers are missing it falls back to `tools/phase0/freestanding/`, which
+supplies declaration-only `string.h`, `stdio.h`, `ctype.h` and `stdint.h` --
+the only host headers the decomp reaches for. The survey never links, so
+declarations suffice, and GCC's own `stddef.h`/`stdarg.h`/`stdbool.h` are
+already width-correct under `-m32`.
+
+| | `-m64` | `-m32` |
+|---|---|---|
+| Compiles clean | 1080 / 1182 (91%) | **1103 / 1182 (93%)** |
+| Game-code failures | 40 | **11** |
+| **Layout assertion failures** | **~180** | **0** |
+
+**All 200 `ASSERT_SIZE`/`offsetof` guards pass under `-m32`.** GCC's x86 32-bit
+struct layout matches what MWCC produced for PowerPC, for every structure the
+codebase checks. Struct packing was the one risk a compiler could not be
+trusted to catch and the one most likely to produce silent garbage rather than
+errors; it is now measured rather than assumed.
+
+The remaining 79 failures are MWCC assembly syntax -- `asm void` bodies,
+register parameters, `@ha`/`@l` relocation operators -- and 59 of them are in
+SDK/libc files a port replaces anyway. Only 11 game-code files remain:
+`lbcardnew.c`, seven under `gr/`, the two `textlib` files, and `efalt.c`
+(which uses MWCC's `__va_arg` idiom from `src/MSL/stdarg.h`).
+

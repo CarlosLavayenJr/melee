@@ -26,6 +26,19 @@ mkdir -p "$OUT/logs"
 # the subshells that xargs spawns, and the decomp's own libc must precede the
 # host's on the include path or its math.h loses to glibc's.
 INCLUDES="-I src -I extern/dolphin/include -I extern/dolphin/include/libc -I extern/dolphin/src"
+
+# -m32 is the port's real target (ACGC-PC-Port builds mingw-w64-i686), but it
+# needs 32-bit libc headers that a plain x86-64 box may not have. Rather than
+# require gcc-multilib just to measure, fall back to freestanding: the decomp
+# pulls in only string.h, stdio.h, ctype.h and stdint.h from the host, and
+# tools/phase0/freestanding supplies declaration-only versions of each. The
+# survey never links, so declarations are enough, and GCC's own stddef.h /
+# stdarg.h / stdbool.h are already width-correct under -m32.
+if [ "$BITS" = "-m32" ] && ! echo '#include <stdio.h>' \
+     | "$CC" -m32 -x c -fsyntax-only - 2>/dev/null; then
+  echo "note: no 32-bit libc headers; using tools/phase0/freestanding"
+  INCLUDES="-nostdinc -I tools/phase0/freestanding -I $("$CC" -print-file-name=include) $INCLUDES"
+fi
 # The Dolphin sources reach sideways for private headers -- vi.c includes
 # "__gx.h" from the gx directory -- which MWCC resolves via -cwd source.
 for d in $(find extern/dolphin/src -type d); do INCLUDES="$INCLUDES -I $d"; done

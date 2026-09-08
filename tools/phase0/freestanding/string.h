@@ -1,0 +1,23 @@
+/* Minimal <string.h> for the -m32 survey. Declarations only: the survey runs
+   -fsyntax-only and never links, and the decomp ships its own implementations
+   in src/MSL anyway. Exists because this container has no 32-bit glibc
+   headers, which would otherwise make -m32 -- the port's real target --
+   impossible to measure. */
+#ifndef PHASE0_STRING_H
+#define PHASE0_STRING_H
+#include <stddef.h>
+void* memcpy(void* d, const void* s, size_t n);
+void* memmove(void* d, const void* s, size_t n);
+void* memset(void* d, int c, size_t n);
+int memcmp(const void* a, const void* b, size_t n);
+char* strcpy(char* d, const char* s);
+char* strncpy(char* d, const char* s, size_t n);
+char* strcat(char* d, const char* s);
+char* strncat(char* d, const char* s, size_t n);
+int strcmp(const char* a, const char* b);
+int strncmp(const char* a, const char* b, size_t n);
+size_t strlen(const char* s);
+char* strchr(const char* s, int c);
+char* strrchr(const char* s, int c);
+char* strstr(const char* h, const char* n);
+#endif
