@@ -58,9 +58,12 @@ cp /path/to/your/melee.iso game.iso     # in the repo root, where you are
 
 Cross-compiling from Linux works too, with the same `CC=` line.
 
-> **Not yet run on real Windows.** It compiles, links, and carries the right PE
-> flag, but no Windows machine has executed it. If it dies immediately, see
-> *It fails on Windows before printing anything* below.
+> **Confirmed on real Windows.** A binary cross-compiled from Linux with the
+> `CC=` line above runs on Windows build 26200: it boots, mounts the disc,
+> parses the file system table, and stops at asset loading like the Linux
+> build. The large-address-aware flag survived and no separate runtime is
+> needed. If it dies immediately, see *It fails on Windows before printing
+> anything* below.
 
 ### WSL2
 
