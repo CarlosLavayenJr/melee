@@ -106,7 +106,14 @@ long __fpclassifyd(double x);
 #define fpclassify(x) (sizeof(x) == sizeof(float) ? __fpclassifyf((float)(x)) : __fpclassifyd((double)(x)))
 #define isfinite(x) ((fpclassify(x) > FP_INFINITE))
 
+/* MWCC emits a single out-of-line copy for a bare `inline`; GCC/Clang under
+   GNU89 inline rules emit one per translation unit, which then collide at
+   link time. Keep the MWCC path byte-identical and mark it static elsewhere. */
+#ifdef __MWERKS__
 inline float fmodf(float x, float m)
+#else
+static inline float fmodf(float x, float m)
+#endif
 {
     float a = fabsf(m);
     float b = fabsf(x);

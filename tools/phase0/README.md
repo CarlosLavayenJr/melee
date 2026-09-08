@@ -112,3 +112,51 @@ An exe built this way links and then dies the moment it touches `__piReg`.
 
 The porting job is therefore *replacing* implementations, not supplying missing
 ones — which is a different and larger task than this symbol count suggests.
+
+---
+
+# Phase 2 — link an executable
+
+`tools/phase0/linkexe.sh` compiles what compiles, generates a placeholder for
+every symbol nothing in the tree defines, links against the game's own
+`main()`, runs the result, and reports where it dies.
+
+```sh
+tools/phase0/linkexe.sh [-m32|-m64]
+```
+
+## Result
+
+```
+  objects: 1047
+  placeholders: 787
+  linked: 14M
+  Program received signal SIGSEGV
+  #0  OSInit ()
+  #1  main ()
+```
+
+A host executable builds and reaches the game's real entry point. It then
+segfaults inside `OSInit()` — the first thing `main()` calls — because that
+function programs GameCube hardware registers that do not exist here.
+
+**This is the shape of the whole port in one backtrace.** Nothing is missing;
+`OSInit` is present and decompiled. It simply does something only a GameCube
+can do. The work is replacing implementations, not supplying absent ones.
+
+## Use the crash point as the progress metric
+
+The binary is not a game and cannot become one by adding placeholders. Its
+value is the position of that crash. Implement a host `OSInit`, and boot moves
+to whatever runs next. That backtrace walking further forward is the most
+honest progress signal available before there is anything to look at.
+
+## Build notes worth keeping
+
+- `-fgnu89-inline` is required. The `extern inline` math helpers are emitted
+  once by MWCC but once *per translation unit* by GCC, which collide at link.
+- `stub.c`, `amcstubs` and `odemustubs` are alternative implementations the
+  real build picks between (see the `Object()` list in `configure.py`).
+  Compiling all of them together produces duplicate symbols.
+- Do not supply your own `main()`. The game has one, in
+  `src/melee/gm/gmmain.c`.

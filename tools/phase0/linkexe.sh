@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+#
+# Phase 2 smoke test: link a host executable and see how far it gets.
+#
+# Compiles what compiles, generates a placeholder for every symbol nothing in
+# the tree defines, links the result against the game's own main(), runs it,
+# and reports where it dies.
+#
+# The binary is NOT a playable game -- the hundreds of placeholders make sure
+# of that. Its value is the crash point: as the port replaces GameCube
+# implementations with host ones, the crash moves further into boot. That
+# position is the progress metric.
+#
+# Usage: tools/phase0/linkexe.sh [-m32|-m64]
+set -uo pipefail
+
+CC="${CC:-gcc}"
+BITS="${1:--m64}"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+OUT="${OUT:-$ROOT/build/phase2}"
+
+cd "$ROOT"
+rm -rf "$OUT"; mkdir -p "$OUT/obj"
+
+# -fgnu89-inline matches how MWCC treats the `extern inline` math helpers;
+# without it GCC emits one copy per translation unit and they collide.
+CFLAGS="$BITS -w -c -O0 -fgnu89-inline -fno-strict-aliasing"
+INCLUDES="-I src -I extern/dolphin/include -I extern/dolphin/include/libc -I extern/dolphin/src"
+
+# stub.c / amcstubs / odemustubs are alternative implementations the real build
+# chooses between (see the Object() list in configure.py); MetroTRK is the
+# debug monitor. Linking all of them at once produces duplicate symbols.
+EXCLUDE='dolphin/stub\.c|amcstubs|odemustubs|MetroTRK'
+
+compile_one() {
+  local f="$1" o
+  o="$OUT/obj/${f//\//_}.o"
+  # shellcheck disable=SC2086
+  "$CC" $CFLAGS -include tools/phase0/compat.h $INCLUDES \
+    -DVERSION_GALE01 -DBUILD_VERSION=0 "$f" -o "$o" 2>/dev/null
+}
+export -f compile_one
+export CC CFLAGS INCLUDES OUT
+
+echo "Compiling ($CC $BITS)..."
+find src extern -name '*.c' | grep -vE "$EXCLUDE" \
+  | xargs -P "$(nproc)" -I{} bash -c 'compile_one "$@"' _ {} >/dev/null 2>&1
+echo "  objects: $(find "$OUT/obj" -name '*.o' | wc -l)"
+
+cd "$OUT/obj"
+nm -g --defined-only ./*.o 2>/dev/null | awk '{print $NF}' | sort -u > "$OUT/def.txt"
+nm -g -u          ./*.o 2>/dev/null | awk '{print $NF}' | sort -u > "$OUT/undef.txt"
+comm -23 "$OUT/undef.txt" "$OUT/def.txt" > "$OUT/todo.txt"
+
+python3 - "$OUT" <<'PY'
+import sys
+out = sys.argv[1]
+skip = {'_GLOBAL_OFFSET_TABLE_', '__stack_chk_fail'}
+syms = [l.strip() for l in open(f'{out}/todo.txt') if l.strip() and l.strip() not in skip]
+with open(f'{out}/stubs.c', 'w') as f:
+    f.write('/* Placeholders for symbols nothing in the tree defines. Sized\n'
+            '   generously and untyped, since nm cannot say what is code and\n'
+            '   what is data. */\n#include <stddef.h>\n')
+    for s in syms:
+        f.write(f'__attribute__((aligned(16))) char {s}[4096];\n')
+print(f'  placeholders: {len(syms)}')
+PY
+
+cd "$ROOT"
+# shellcheck disable=SC2086
+"$CC" $BITS -w -c "$OUT/stubs.c" -o "$OUT/stubs.o"
+echo "Linking..."
+# shellcheck disable=SC2086
+if "$CC" $BITS -o "$OUT/melee_host" "$OUT"/obj/*.o "$OUT/stubs.o" -lm 2>"$OUT/link.log"; then
+  echo "  linked: $(du -h "$OUT/melee_host" | cut -f1)"
+else
+  echo "  LINK FAILED — see $OUT/link.log"; head -5 "$OUT/link.log"; exit 1
+fi
+
+echo
+echo "Running (expect a crash — that is the point)..."
+if command -v gdb >/dev/null; then
+  timeout 30 gdb -batch -ex run -ex bt "$OUT/melee_host" 2>&1 \
+    | grep -E "SIGSEGV|SIGABRT|^#[0-9]|exited" | head -10 | sed 's/^/  /'
+else
+  timeout 15 "$OUT/melee_host"; echo "  exit: $?"
+fi
