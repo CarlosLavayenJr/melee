@@ -1,6 +1,8 @@
 /* pc_sys_hosted.c — host services via the platform C library.
    Used for any build that is not the 32-bit freestanding one. */
-#if !(defined(__i386__) && defined(PC_FREESTANDING))
+/* Not on Windows: pc_sys_windows.c covers that, and none of the POSIX
+   calls below exist there. */
+#if !(defined(__i386__) && defined(PC_FREESTANDING)) && !defined(_WIN32)
 
 #include "pc_sys.h"
 #include <stdio.h>

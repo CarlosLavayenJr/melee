@@ -449,3 +449,69 @@ Melee draws nearly everything through `GXCallDisplayList`, replaying command
 streams precompiled into the `.dat` files, so that counter in particular says
 how much of the work is display-list interpretation rather than immediate-mode
 drawing.
+
+
+---
+
+# Building for Windows
+
+```sh
+CC=i686-w64-mingw32-gcc tools/phase0/linkexe.sh -m32
+```
+
+Produces `build/phase2/melee_host.exe`, a 32-bit PE. Put a disc image beside it
+as `game.iso` and run it from a console window; output goes to stderr.
+
+On Windows itself, install MSYS2 and its `mingw-w64-i686-gcc`, then run the same
+command from the MINGW32 shell. Cross-compiling from Linux works too and is what
+this was verified with.
+
+## The flag that decides whether it runs at all
+
+`pc_memory.c` maps 0x80000000, 0xC0000000 and 0xCC000000, because the game
+hardcodes those addresses. **A 32-bit Windows process is normally given only
+0x00000000 to 0x7FFFFFFF** -- all three are above that line, in what is
+ordinarily kernel space, so every mapping fails and nothing runs.
+
+A 32-bit process on 64-bit Windows gets the full 4 GB, but only if the image is
+marked large-address-aware. `linkexe.sh` passes `-Wl,--large-address-aware`
+when it sees a MinGW compiler. If a Windows build dies on its first mapping,
+check that flag first:
+
+```sh
+python3 -c "import struct,sys; d=open(sys.argv[1],'rb').read(); \
+  pe=struct.unpack_from('<I',d,0x3C)[0]; \
+  print('aware' if struct.unpack_from('<H',d,pe+22)[0]&0x20 else 'NOT AWARE')" \
+  build/phase2/melee_host.exe
+```
+
+## Two things Windows needs that Linux does not
+
+**Its own host backend.** `pc_sys_windows.c` implements the four functions in
+`pc_sys.h` over `VirtualAlloc`, `CreateFile`/`ReadFile` with an `OVERLAPPED`
+offset, and `QueryPerformanceCounter`. The Linux freestanding backend is raw
+i386 syscalls and does not apply; the POSIX one stands down under `_WIN32`.
+
+**Separate include paths for the port layer and the decomp.** `src/MSL` is the
+decomp's own C library, and its headers assume they are the only ones present
+-- its `stddef.h` types `size_t` differently from MinGW's. The decomp needs MSL
+to win, since `sysdolphin/baselib/debug.c` reaches into Metrowerks' `FILE`;
+`pc/src` needs MinGW to win, since `<windows.h>` needs MinGW's `size_t`.
+`compile_one` picks by path, which is the honest split: `pc/src` is host code
+and everything else is console code.
+
+MSL's *implementations* still duplicate msvcrt's, so the duplicating sources
+are excluded on Windows while its headers stay.
+
+| | Linux `-m32` | Windows `-m32` |
+|---|---|---|
+| objects | 1135 | 1128 |
+| placeholders | 33 | 40 |
+| binary | 11M ELF | 12M PE32 |
+
+The remaining Windows-only gaps are MSL internals (`__ctype_map`, `errno`,
+`__read_console`) referenced by the MSL sources that were kept, from the ones
+that were dropped. None are on the boot path.
+
+**Untested on real hardware.** It compiles, links, and carries the right PE
+flag, but no Windows machine has run it here.

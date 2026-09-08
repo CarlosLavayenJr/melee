@@ -31,6 +31,15 @@ set -- $ARGS
 
 CC="${CC:-gcc}"
 BITS="${1:--m64}"
+
+# A Windows target is chosen by pointing CC at a MinGW compiler:
+#   CC=i686-w64-mingw32-gcc tools/phase0/linkexe.sh -m32
+# It needs a different host backend, a .exe suffix, and above all the
+# large-address-aware flag: a 32-bit Windows process is otherwise limited to
+# the low 2 GB, and pc_memory.c maps 0x80000000 and above, so every mapping
+# fails without it.
+WINDOWS=0
+case "$CC" in *mingw*) WINDOWS=1 ;; esac
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 OUT="${OUT:-$ROOT/build/phase2}"
 
@@ -43,6 +52,7 @@ CFLAGS="$BITS -w -c -O0 -fgnu89-inline -fno-strict-aliasing"
 LDFLAGS="-lm"
 FREESTANDING=0
 STUBFLAGS=""
+OUTBIN="melee_host"
 # MWCC builds with -cwd source, so a file's own directory is searched for
 # quoted includes. GCC does that too, but the Dolphin sources also reach
 # sideways -- vi.c includes "__gx.h" from the gx directory -- so every source
@@ -54,7 +64,10 @@ INCLUDES="-I src -I extern/dolphin/include -I extern/dolphin/include/libc -I ext
 # *libraries*, which headers alone cannot supply -- install gcc-multilib. Fail
 # early and say so rather than emitting a wall of ld errors.
 if [ "$BITS" = "-m32" ]; then
-  if ! echo '#include <stdio.h>' | "$CC" -m32 -x c -fsyntax-only - 2>/dev/null; then
+  if [ "$WINDOWS" = 1 ]; then
+    : # MinGW ships a complete 32-bit libc; the freestanding fallback is for
+      # Linux hosts that lack one.
+  elif ! echo '#include <stdio.h>' | "$CC" -m32 -x c -fsyntax-only - 2>/dev/null; then
     # src/MSL precedes the freestanding headers deliberately. It is the decomp's
     # own standard library -- string.c, printf.c, strtoul.c, math.c and trigf.c
     # implement what the game calls -- and those sources only compile against
@@ -71,7 +84,30 @@ if [ "$BITS" = "-m32" ]; then
   # of giving up: -nostdlib with our own _start and raw syscalls. src/MSL
   # already supplies memcpy, printf, the string routines and most of the math,
   # so pc_libc.c only has to add sqrt, sqrtf, floor and atanf.
-  if ! echo 'int main(void){return 0;}' | "$CC" -m32 -x c -o /dev/null - 2>/dev/null; then
+  if [ "$WINDOWS" = 1 ]; then
+    LDFLAGS="-Wl,--large-address-aware"
+    OUTBIN="melee_host.exe"
+    # MinGW brings a complete C library, and src/MSL is the decomp's own copy
+    # of one: its ctype.c, string.c and friends define the same symbols and
+    # collide at link. The freestanding Linux build needs MSL because there is
+    # no libc there at all; Windows does not.
+    # MSL's headers are needed -- sysdolphin/baselib/debug.c and sislib.c are
+    # written against them -- but they assume they are the only libc headers
+    # present and collide with MinGW's on size_t and friends. So the path is
+    # ordered explicitly, as the Linux freestanding build does: the decomp's
+    # own headers first, MinGW's behind them for <windows.h> and the rest.
+    INCLUDES="-nostdinc -I pc/src -I extern/dolphin/include/libc -I src/MSL"
+    INCLUDES="$INCLUDES -I tools/phase0/freestanding"
+    INCLUDES="$INCLUDES -I $("$CC" -print-file-name=include)"
+    INCLUDES="$INCLUDES -I /usr/$(echo "$CC" | sed 's/-gcc$//')/include"
+    INCLUDES="$INCLUDES -I src -I extern/dolphin/include -I extern/dolphin/src"
+    # pc/src is host code, not console code, and wants the opposite priority:
+    # <windows.h> needs MinGW's size_t, which MSL's stddef.h would shadow.
+    INCLUDES_PC="-I pc/src -I src -I extern/dolphin/include"
+    INCLUDES_PC="$INCLUDES_PC -I extern/dolphin/include/libc -I extern/dolphin/src"
+    # MSL's implementations still duplicate msvcrt's, so those sources go.
+    EXCLUDE_HOSTLIBC="src/MSL/(ctype|string|mem|mem_funcs|float|errno|rand|misc_io|abort_exit|uart_console_io|mbstring|math_data)\\.c|"
+  elif ! echo 'int main(void){return 0;}' | "$CC" -m32 -x c -o /dev/null - 2>/dev/null; then
     echo "note: no 32-bit libc; linking freestanding (-nostdlib)"
     FREESTANDING=1
     CFLAGS="$CFLAGS -fno-stack-protector -DPC_FREESTANDING"
@@ -102,17 +138,23 @@ else
   EXCLUDE_TRACE='pc/src/pc_gx_trace\.c|'
 fi
 
-EXCLUDE="${EXCLUDE_TRACE:-}"'dolphin/stub\.c|amcstubs|odemustubs|MetroTRK|dolphin/os/OS(Interrupt|Alarm|Time|Cache|Context|Reset|ResetSW|Thread)?\.c|MSL/printf\.c|dolphin/pad/pad\.c|dolphin/ar/ar\.c|dolphin/dsp/dsp(_task)?\.c|dolphin/dvd/dvdlow\.c'
+EXCLUDE="${EXCLUDE_TRACE:-}${EXCLUDE_HOSTLIBC:-}"'dolphin/stub\.c|amcstubs|odemustubs|MetroTRK|dolphin/os/OS(Interrupt|Alarm|Time|Cache|Context|Reset|ResetSW|Thread)?\.c|MSL/printf\.c|dolphin/pad/pad\.c|dolphin/ar/ar\.c|dolphin/dsp/dsp(_task)?\.c|dolphin/dvd/dvdlow\.c'
 
 compile_one() {
-  local f="$1" o
+  local f="$1" o inc
   o="$OUT/obj/${f//\//_}.o"
+  # Files under pc/src are the port layer: host code, compiled against host
+  # headers. Everything else is the decomp, compiled against its own.
+  case "$f" in
+    pc/src/*) inc="${INCLUDES_PC:-$INCLUDES}" ;;
+    *)        inc="$INCLUDES" ;;
+  esac
   # shellcheck disable=SC2086
-  "$CC" $CFLAGS -include tools/phase0/compat.h $INCLUDES \
+  "$CC" $CFLAGS -include tools/phase0/compat.h $inc \
     -DVERSION_GALE01 -DBUILD_VERSION=0 "$f" -o "$o" 2>/dev/null
 }
 export -f compile_one
-export CC CFLAGS INCLUDES OUT FREESTANDING STUBFLAGS
+export CC CFLAGS INCLUDES INCLUDES_PC OUT FREESTANDING STUBFLAGS
 
 echo "Compiling ($CC $BITS)..."
 find src extern pc/src -name '*.c' | grep -vE "$EXCLUDE" \
@@ -152,8 +194,8 @@ cd "$ROOT"
 "$CC" $BITS -w -c $STUBFLAGS "$OUT/stubs.c" -o "$OUT/stubs.o"
 echo "Linking..."
 # shellcheck disable=SC2086
-if "$CC" $BITS -o "$OUT/melee_host" "$OUT"/obj/*.o "$OUT/stubs.o" $LDFLAGS 2>"$OUT/link.log"; then
-  echo "  linked: $(du -h "$OUT/melee_host" | cut -f1)"
+if "$CC" $BITS -o "$OUT/$OUTBIN" "$OUT"/obj/*.o "$OUT/stubs.o" $LDFLAGS 2>"$OUT/link.log"; then
+  echo "  linked: $(du -h "$OUT/$OUTBIN" | cut -f1)"
 else
   echo "  LINK FAILED — see $OUT/link.log"; head -5 "$OUT/link.log"; exit 1
 fi
@@ -161,8 +203,8 @@ fi
 echo
 echo "Running (expect a crash — that is the point)..."
 if command -v gdb >/dev/null; then
-  timeout 30 gdb -batch -ex run -ex bt "$OUT/melee_host" 2>&1 \
+  timeout 30 gdb -batch -ex run -ex bt "$OUT/$OUTBIN" 2>&1 \
     | grep -E "SIGSEGV|SIGABRT|^#[0-9]|exited" | head -10 | sed 's/^/  /'
 else
-  timeout 15 "$OUT/melee_host"; echo "  exit: $?"
+  timeout 15 "$OUT/$OUTBIN"; echo "  exit: $?"
 fi
