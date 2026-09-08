@@ -55,6 +55,10 @@ void OSInitThreadQueue(OSThreadQueue* queue)
     queue->tail = NULL;
 }
 
+/* Deliver the ARAM DMA completions that pc_ar.c deferred. On hardware these
+   arrive on their own interrupt; here the frame tick is the safe point. */
+extern void pc_ar_poll(void);
+
 /* Advance one video frame by invoking the handler the game registered. */
 static void pc_vi_tick(void)
 {
@@ -62,6 +66,7 @@ static void pc_vi_tick(void)
     if (handler != NULL) {
         handler(PC_INTERRUPT_PI_VI, NULL);
     }
+    pc_ar_poll();
 }
 
 void OSSleepThread(OSThreadQueue* queue)

@@ -297,43 +297,32 @@ pc_os: arena set, 23 MB
 app booted from bootrom          <- the game's own OSReport
 ```
 
-**It no longer crashes.** That third line is Melee printing its own boot
-message. The process now runs until it spins inside `__ARChecksize`, the
-audio-RAM size probe, which walks addresses looking for the point where writes
-wrap -- and never converges, because MMIO reads return whatever was last
-written. That is the stall `pc_memory.c` warns about, arriving exactly where
-predicted.
+**Initialisation is complete.** The game boots, brings up video, audio and
+input, and then asks for its data:
 
-`main()` opens with
+```
+pc_memory: mapped 24 MB RAM and 64 KB MMIO
+pc_os: arena set, 23 MB
+app booted from bootrom
+pc_dsp: no DSP; audio tasks complete immediately
+pc_ar: 16 MB ARAM (host memory)
+pc_ai: audio interface present, playback disabled
+DVDReadAsync(): specified area is out of the file   in ".../dvdfs.c" on line 739.
 
-```c
-OSInit(); VIInit(); DVDInit(); PADInit(); CARDInit(); OSInitAlarm();
-db_GetGameLaunchButtonState();
+Address:      Back Chain    LR Save
+0xff888a88:   0xff888aa8    0x0807bf40
+...
 ```
 
-and every one of those now returns, along with everything after them up to
-graphics. Boot currently reaches `GXInit`:
+That last part is Melee's **own** crash handler -- the one `db_SetupCrashHandler`
+installed during boot -- printing its **own** stack trace. It is not a
+segfault; the game noticed a bad read and reported it the way it was written
+to. And the read is bad for the honest reason: `pc_bootinfo.c` publishes an
+empty file system, so there are no files to load.
 
-```c
-OSInit(); VIInit(); DVDInit(); PADInit(); CARDInit(); OSInitAlarm();  /* ok */
-db_GetGameLaunchButtonState();                                        /* ok */
-gmMain_8015FDA4();                                                    /* ok */
-arena_size = (intptr_t) OSGetArenaHi() - (intptr_t) OSGetArenaLo();   /* ok */
-HSD_SetInitParameter(...);                                            /* ok */
-db_SetupCrashHandler();                                               /* ok */
-HSD_AllocateXFB(2, &GXNtsc480IntDf);                                  /* ok */
-HSD_GXSetFifoObj(GXInit(HSD_AllocateFifo(0x40000), 0x40000));         /* ok */
-HSD_InitComponent();                                                  /* ok */
-GXSetMisc(1, 8);                                                      /* ok */
-*seed_ptr = OSGetTick();                                              /* ok */
-lbAudioAx_8002838C();                                                 /* spins */
-```
-
-`db_GetGameLaunchButtonState` polls the controller and waits a full video
-frame; `gmMain_8015FDA4` is the `develop.ini` probe that picks the debug level,
-and it now runs the real filesystem search and correctly finds nothing.
-`HSD_AllocateXFB` has taken the framebuffer out of the arena. What remains
-before anything can be drawn is the GX layer itself.
+**Every subsystem `main()` initialises now returns, and the port stops exactly
+where a console with a blank disc would.** Going further means giving the DVD
+layer a real disc image to read.
 
 ## What the pc/ layer covers so far
 

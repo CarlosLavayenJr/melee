@@ -75,3 +75,8 @@ BOOL OSGetResetSwitchState(void) { return FALSE; }
    writes and nothing here does. There is no PowerPC debugger attached, so the
    answer is fixed. */
 BOOL DBIsDebuggerPresent(void) { return FALSE; }
+
+/* The reset code the IPL leaves in low memory to say why the machine came up
+   -- power-on, reset button, a game returning to the menu. A host build always
+   starts cold. */
+u32 OSGetResetCode(void) { return 0; }
