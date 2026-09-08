@@ -324,38 +324,29 @@ terms of `__builtin_va_info`, an MWCC internal with nothing to link against
 elsewhere, so a host build died inside the first `OSReport`. Off MWCC it now
 maps to the compiler's own `__builtin_va_*`.
 
-## The next wall is a stall, not a crash
+## The frame loop is inverted, on purpose
 
-`VIWaitForRetrace` sleeps until the vertical retrace interrupt wakes it.
-Nothing here raises interrupts, so once `OSSleepThread` exists that call will
-**hang rather than fault** -- exactly what pc_os_interrupt.c and pc_os_time.c
-warn about. Getting past it means driving frames from the port's own loop and
-calling the registered retrace handler directly, which is the point where a
-host port stops emulating the console's control flow and takes it over.
+`VIWaitForRetrace` parks until the vertical retrace interrupt fires:
 
-**This run is trustworthy in a way the -m64 one is not.** `u32` is 4 bytes,
-struct layouts match, and pointers do not sign-extend. Placeholders fall from
-730 to 187 for the same reason: most of what looked missing under `-m64` was
-simply files that could not compile there.
+```c
+count = retraceCount;
+do { OSSleepThread(&retraceQueue); } while (count == retraceCount);
+```
 
-Boot is also further along. The `-m64` build dies inside `__VIInit` at
-`vi.c:294` on a sign-extended address -- an artifact, not a bug. The `-m32`
-build clears that entirely and stops at `__OSSetInterruptHandler`, which is a
-placeholder because `OSInterrupt.c` has not been made to build yet. A real
-gap, in other words, rather than a mirage.
+Nothing here raises interrupts, so a sleep that merely returned would spin that
+loop forever. Instead **sleeping advances the machine**: `OSSleepThread` calls
+the VI retrace handler the game registered during `VIInit`, which bumps
+`retraceCount` and runs the frame callbacks, and the wait then finds its
+condition satisfied.
 
-## Three things a freestanding link needs that a hosted one hides
+The handler is `static` inside `vi.c`, so it is reached through the table in
+`pc_os_interrupt.c` -- `VIInit` registers it as
+`__OSSetInterruptHandler(0x18, __VIRetraceHandler)`, and `0x18` is
+`__OS_INTERRUPT_PI_VI`.
 
-- **`-fno-stack-protector`.** GCC's canary loads from `%gs:0x14`, and nothing
-  sets up TLS without a C runtime. Without this, every function faults in its
-  own prologue.
-- **A realigned stack.** The kernel enters `_start` with `%esp` pointing at
-  `argc`, 4-byte aligned, while the i386 ABI promises 16. GCC relies on that
-  promise and will emit an aligned SSE store into a local. The entry point is
-  therefore top-level assembly that masks `%esp` before calling anything -- a C
-  function cannot fix this, because its own prologue already ran on the bad
-  stack.
-- **Constructors called by name.** `.init_array` is walked by the C runtime,
-  and a `-nostdlib -static` link does not even emit the section bounds, so
-  `pc_start_c` calls `pc_memory_init` directly. Any future initializer has to
-  join that list.
+This inverts the usual arrangement. Rather than the host driving frames and the
+game following, the game asks to wait and the host advances one frame inside
+that request. It is enough to boot and it leaves every caller's control flow
+intact. A port that wants real pacing -- vsync, a fixed timestep -- takes the
+loop back, and `OSSleepThread` in `pc_os_thread.c` is where that gets undone.
+
