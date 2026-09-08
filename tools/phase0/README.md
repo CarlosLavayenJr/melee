@@ -292,7 +292,7 @@ objects: 1125      placeholders: 154      linked: 11M
 
 pc_memory: mapped 24 MB RAM and 64 KB MMIO
 pc_os: arena set, 23 MB
-SIGSEGV in OSSleepThread ()  <- VIWaitForRetrace, db_GetGameLaunchButtonState
+SIGSEGV in GXInit ()  <- from main()
 ```
 
 `main()` opens with
@@ -302,8 +302,25 @@ OSInit(); VIInit(); DVDInit(); PADInit(); CARDInit(); OSInitAlarm();
 db_GetGameLaunchButtonState();
 ```
 
-and every one of those now returns. Boot stops inside the seventh, which polls
-the controller for the debug boot chord and waits on the vertical retrace.
+and every one of those now returns, along with everything after them up to
+graphics. Boot currently reaches `GXInit`:
+
+```c
+OSInit(); VIInit(); DVDInit(); PADInit(); CARDInit(); OSInitAlarm();  /* ok */
+db_GetGameLaunchButtonState();                                        /* ok */
+gmMain_8015FDA4();                                                    /* ok */
+arena_size = (intptr_t) OSGetArenaHi() - (intptr_t) OSGetArenaLo();   /* ok */
+HSD_SetInitParameter(...);                                            /* ok */
+db_SetupCrashHandler();                                               /* ok */
+HSD_AllocateXFB(2, &GXNtsc480IntDf);                                  /* ok */
+HSD_GXSetFifoObj(GXInit(HSD_AllocateFifo(0x40000), 0x40000));         /* here */
+```
+
+`db_GetGameLaunchButtonState` polls the controller and waits a full video
+frame; `gmMain_8015FDA4` is the `develop.ini` probe that picks the debug level,
+and it now runs the real filesystem search and correctly finds nothing.
+`HSD_AllocateXFB` has taken the framebuffer out of the arena. What remains
+before anything can be drawn is the GX layer itself.
 
 ## What the pc/ layer covers so far
 

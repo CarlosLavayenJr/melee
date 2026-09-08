@@ -14,6 +14,7 @@
 #include <dolphin/os.h>
 #include <dolphin/os/OSReset.h>
 #include <dolphin/os/OSResetSW.h>
+#include <dolphin/db.h>
 
 static OSResetFunctionInfo* reset_head;
 
@@ -69,3 +70,8 @@ void OSResetSystem(int reset, u32 resetCode, BOOL forceMenu)
 
 /* The physical reset button, which a host build does not have. */
 BOOL OSGetResetSwitchState(void) { return FALSE; }
+
+/* db.c reads the debugger's presence flag out of low memory, which the IPL
+   writes and nothing here does. There is no PowerPC debugger attached, so the
+   answer is fixed. */
+BOOL DBIsDebuggerPresent(void) { return FALSE; }

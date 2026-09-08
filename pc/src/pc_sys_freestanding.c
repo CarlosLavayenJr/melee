@@ -81,10 +81,12 @@ extern int main(void);
    linker would normally supply are absent from a -nostdlib -static link, so it
    is called by name. Any future initializer belongs in this list too. */
 extern void pc_memory_init(void);
+extern void pc_bootinfo_init(void);
 
 void pc_start_c(void)
 {
     pc_memory_init();
+    pc_bootinfo_init(); /* must follow the mapping, precede main() */
     pc_sys_exit(main());
 }
 
