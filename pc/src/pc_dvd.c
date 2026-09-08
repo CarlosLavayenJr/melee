@@ -43,6 +43,7 @@
 
 #include <dolphin/dvd.h>
 #include <dolphin/os.h>
+#include "pc_watch.h"
 
 /* dvd.h spells the low-level completion callback inline in every prototype
    rather than naming it; give it a name here. */
@@ -441,6 +442,10 @@ int pc_dvd_mount(void)
 int DVDLowRead(void* addr, u32 length, u32 offset, DVDLowCallback callback)
 {
     long got;
+
+    /* The boot is still moving; anything the detector has counted was ordinary
+       work between two reads, not a stall. */
+    pc_watch_progress();
 
     if (disc_fd < 0) {
         if (callback != NULL) {

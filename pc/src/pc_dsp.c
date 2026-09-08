@@ -27,6 +27,7 @@
 #include "pc_sys.h"
 
 #include <dolphin/dsp.h>
+#include "pc_watch.h"
 
 /* Task states, mirroring dsp_task.c. */
 #define PC_DSP_TASK_INIT 1
@@ -50,12 +51,20 @@ void DSPHalt(void)   { }
 void DSPUnhalt(void) { }
 
 /* "The outbound mailbox is empty" -- the CPU may always send. */
-u32 DSPCheckMailToDSP(void) { return 0; }
+u32 DSPCheckMailToDSP(void)
+{
+    pc_watch_hit(PC_WATCH_DSP);
+    return 0;
+}
 
 /* "The inbound mailbox is empty" -- there is never a reply pending. Returning
    non-zero here would make callers read a message that does not exist; the
    handshake instead falls through on its own timeout paths. */
-u32 DSPCheckMailFromDSP(void) { return 0; }
+u32 DSPCheckMailFromDSP(void)
+{
+    pc_watch_hit(PC_WATCH_DSP);
+    return 0;
+}
 
 u32 DSPReadMailFromDSP(void)  { return 0; }
 u32 DSPReadCPUToDSPMbox(void) { return last_mail; }
@@ -64,7 +73,11 @@ void DSPSendMailToDSP(u32 mail) { last_mail = mail; }
 
 void DSPAssertInt(void) { }
 
-u32 DSPGetDMAStatus(void) { return 0; }
+u32 DSPGetDMAStatus(void)
+{
+    pc_watch_hit(PC_WATCH_DSP);
+    return 0;
+}
 
 /* __DSPGetCurrentTask is left to dsp_debug.c, which builds unmodified. It
    reads the same variable the SDK exports, so it is not duplicated here. */

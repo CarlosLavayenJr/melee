@@ -17,6 +17,7 @@
 
 #include <dolphin/os.h>
 #include <dolphin/os/OSAlarm.h>
+#include "pc_watch.h"
 
 /* The SDK derives its tick rate from the bus clock; retail hardware runs a
    162 MHz bus, and OS_TIMER_CLOCK is a quarter of it. */
@@ -39,6 +40,7 @@ static unsigned long long pc_mono_ns(void)
 
 OSTime OSGetTime(void)
 {
+    pc_watch_hit(PC_WATCH_OS_TIME);
     return (OSTime) ((pc_mono_ns() * PC_TIMER_CLOCK) / NS_PER_SEC);
 }
 

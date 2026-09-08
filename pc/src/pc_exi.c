@@ -19,6 +19,7 @@
 #include "pc_sys.h"
 
 #include <dolphin/exi.h>
+#include "pc_watch.h"
 
 /* Controllers are polled through SI; the sampling rate follows the video mode,
    and __VIRetraceHandler refreshes it every frame. With no serial hardware
@@ -55,6 +56,7 @@ BOOL EXIImm(s32 channel, void* buffer, s32 length, u32 type,
             EXICallback callback)
 {
     (void) channel; (void) buffer; (void) length; (void) type; (void) callback;
+    pc_watch_hit(PC_WATCH_EXI);
     return TRUE;
 }
 

@@ -33,6 +33,7 @@
 #include <dolphin/os.h>
 #include <dolphin/os/OSInterrupt.h>
 #include <dolphin/os/OSThread.h>
+#include "pc_watch.h"
 
 /* Registered by VIInit as __OSSetInterruptHandler(0x18, __VIRetraceHandler).
    The handler is static inside vi.c, so it is reached through the table in
@@ -72,12 +73,17 @@ static void pc_vi_tick(void)
 void OSSleepThread(OSThreadQueue* queue)
 {
     (void) queue;
+    pc_watch_hit(PC_WATCH_YIELD);
     pc_vi_tick();
 }
 
 void OSWakeupThread(OSThreadQueue* queue) { (void) queue; }
 
-void OSYieldThread(void) { pc_vi_tick(); }
+void OSYieldThread(void)
+{
+    pc_watch_hit(PC_WATCH_YIELD);
+    pc_vi_tick();
+}
 
 /* Threads are accepted and never started. Anything the game spawns would need
    the frame loop to pump it; nothing on the boot path depends on one running,

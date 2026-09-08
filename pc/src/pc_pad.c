@@ -24,6 +24,7 @@
 #include "pc_sys.h"
 
 #include <dolphin/pad.h>
+#include "pc_watch.h"
 
 #define PC_PAD_PORTS 4
 
@@ -47,6 +48,8 @@ BOOL PADRecalibrate(u32 mask)
 u32 PADRead(PADStatus* status)
 {
     int i;
+
+    pc_watch_hit(PC_WATCH_PAD);
     for (i = 0; i < PC_PAD_PORTS; i++) {
         status[i].button = 0;
         status[i].stickX = 0;

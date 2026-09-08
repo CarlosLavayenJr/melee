@@ -23,6 +23,7 @@
 #include "pc_sys.h"
 
 #include <dolphin/ar.h>
+#include "pc_watch.h"
 
 #define PC_ARAM_SIZE (16u << 20) /* retail ARAM */
 
@@ -105,7 +106,11 @@ ARQCallback ARRegisterDMACallback(ARQCallback callback)
 }
 
 /* Always idle: transfers finish inside ARStartDMA. */
-u32 ARGetDMAStatus(void) { return 0; }
+u32 ARGetDMAStatus(void)
+{
+    pc_watch_hit(PC_WATCH_AR);
+    return 0;
+}
 
 void ARStartDMA(u32 type, u32 mainmem_addr, u32 aram_addr, u32 length)
 {
