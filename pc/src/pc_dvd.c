@@ -93,6 +93,159 @@ typedef struct {
     pc_u32 FSTMaxLength;
 } pc_boot_info;
 
+/* Decimal, for the diagnostics below. Neither build can assume printf: the
+   freestanding one links no libc at all. */
+static void log_uint(unsigned int n)
+{
+    char digits[12];
+    char out[13];
+    int d = 0, j = 0;
+
+    if (n == 0) {
+        pc_sys_log("0");
+        return;
+    }
+    while (n > 0 && d < 12) {
+        digits[d++] = (char) ('0' + (n % 10));
+        n /= 10;
+    }
+    while (d > 0) {
+        out[j++] = digits[--d];
+    }
+    out[j] = 0;
+    pc_sys_log(out);
+}
+
+/* --- byte order, part two: file contents ---------------------------------
+ *
+ * The FST above is a fixed schema, so swapping it is a loop. Contents are not.
+ * A .dat interleaves big-endian floats, pointers and byte arrays, and only the
+ * format knows which word is which -- swapping all of it is as wrong as
+ * swapping none.
+ *
+ * The swap also cannot go where the reads are consumed. synth.c and every
+ * other file under src/ is decompiled game code that has to keep matching the
+ * original, so it must see the data already in host order. That leaves this
+ * layer, which has a problem of its own: DVDLowRead is handed an absolute disc
+ * offset and no idea which file it belongs to.
+ *
+ * The FST closes that gap. It maps offsets to files, so a read can be resolved
+ * back to a name and the name selects the schema. Formats with no schema yet
+ * are passed through untouched, exactly as every file was until now.
+ */
+
+static unsigned int fst_count; /* entries; 0 until a disc is mounted */
+
+/* Resolve an absolute disc offset to the file holding it. Returns the file's
+   name and sets *rel to the offset within it, or NULL when the read lies
+   outside every file -- the disc header and the FST itself do. */
+static const char* fst_file_at(unsigned int offset, unsigned int* rel)
+{
+    const unsigned char* fst = (const unsigned char*) PC_FST_ADDR;
+    const char* strings;
+    unsigned int i;
+
+    if (fst_count == 0) {
+        return 0;
+    }
+    strings = (const char*) (fst + fst_count * sizeof(pc_fst_entry));
+
+    /* Entry zero is the root directory, so the walk starts at one. A linear
+       scan of ~1200 entries per read is not free, but correctness first: the
+       alternative is an index built at mount, and nothing here is hot enough
+       yet to have earned one. */
+    for (i = 1; i < fst_count; i++) {
+        const pc_fst_entry* e =
+            (const pc_fst_entry*) (fst + i * sizeof(pc_fst_entry));
+        unsigned int pos, len;
+
+        if ((e->isDirAndStringOff >> 24) != 0) {
+            continue; /* a directory: no extent of its own */
+        }
+        pos = e->parentOrPosition;
+        len = e->nextEntryOrLength;
+        /* Subtract rather than add: pos + len can wrap on a corrupt image and
+           swallow offsets that belong to no file at all. */
+        if (offset >= pos && offset - pos < len) {
+            *rel = offset - pos;
+            return strings + (e->isDirAndStringOff & 0x00FFFFFFU);
+        }
+    }
+    return 0;
+}
+
+static int name_ends_with(const char* s, const char* suffix)
+{
+    unsigned int ls = 0, lx = 0, i;
+
+    while (s[ls] != 0) {
+        ls++;
+    }
+    while (suffix[lx] != 0) {
+        lx++;
+    }
+    if (lx > ls) {
+        return 0;
+    }
+    for (i = 0; i < lx; i++) {
+        char a = s[ls - lx + i];
+        if (a >= 'A' && a <= 'Z') {
+            a = (char) (a - 'A' + 'a');
+        }
+        if (a != suffix[i]) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* Swap a run of 32-bit words in place. The SDK issues reads into 32-byte
+   aligned buffers, so the word accesses below are aligned. */
+static void swap_words(unsigned char* p, unsigned int words)
+{
+    unsigned int i;
+
+    for (i = 0; i < words; i++) {
+        unsigned char* w = p + i * 4;
+        pc_u32 v = be32(w);
+        *(pc_u32*) w = v;
+    }
+}
+
+/* A sound sample map opens with a header the loader reads into a static array
+   of eight words (hsd_SynthSFXLoadBuf, synth.static.h) and then indexes for
+   sizes and counts. Those eight words are the entire schema for this read; the
+   ADPCM samples that follow are bytes and must not be touched. */
+#define SFX_HEADER_BYTES 0x20
+
+/* Returns 1 when a schema claimed the read, 0 when the format is still
+   unconverted. */
+static int swap_contents(const char* name, unsigned int rel,
+                         unsigned char* addr, unsigned int length)
+{
+    if (name_ends_with(name, ".ssm")) {
+        if (rel == 0 && length >= SFX_HEADER_BYTES) {
+            swap_words(addr, SFX_HEADER_BYTES / 4);
+        }
+        return 1;
+    }
+    return 0;
+}
+
+#ifdef PC_DVD_TRACE
+static void trace_read(const char* name, unsigned int rel, unsigned int length,
+                       int claimed)
+{
+    pc_sys_log(claimed ? "dvd: swap " : "dvd: pass ");
+    pc_sys_log(name);
+    pc_sys_log(" +");
+    log_uint(rel);
+    pc_sys_log(" ");
+    log_uint(length);
+    pc_sys_log("\n");
+}
+#endif
+
 /* Opens the disc image and publishes its file system table. Returns 0 when no
    image is found, in which case pc_bootinfo.c's empty file system stands and
    the game boots to the point of asking for data, as before. */
@@ -161,40 +314,14 @@ int pc_dvd_mount(void)
     }
     info->FSTLocation = fst;
     info->FSTMaxLength = fst_size;
+    fst_count = entries;
 
     /* Report what was parsed. A wrong entry count is the first sign the header
        offsets or the byte swap are off, and it is otherwise invisible until a
        lookup fails much later for reasons that look unrelated. */
-    {
-        char msg[64];
-        unsigned int n = entries;
-        int len = 0, j;
-        const char* pre = "pc_dvd: file system table, ";
-        for (j = 0; pre[j] != 0; j++) {
-            msg[len++] = pre[j];
-        }
-        if (n == 0) {
-            msg[len++] = '0';
-        } else {
-            char digits[12];
-            int d = 0;
-            while (n > 0 && d < 12) {
-                digits[d++] = (char) ('0' + (n % 10));
-                n /= 10;
-            }
-            while (d > 0) {
-                msg[len++] = digits[--d];
-            }
-        }
-        {
-            const char* post = " entries\n";
-            for (j = 0; post[j] != 0; j++) {
-                msg[len++] = post[j];
-            }
-        }
-        msg[len] = 0;
-        pc_sys_log(msg);
-    }
+    pc_sys_log("pc_dvd: file system table, ");
+    log_uint(entries);
+    pc_sys_log(" entries\n");
 
     return 1;
 }
@@ -218,6 +345,22 @@ int DVDLowRead(void* addr, u32 length, u32 offset, DVDLowCallback callback)
             callback(DVD_INTTYPE_DE);
         }
         return 0;
+    }
+
+    /* Put the bytes into host order before anyone above sees them. Reads that
+       resolve to no file -- the header, the FST -- are left alone. */
+    {
+        unsigned int rel = 0;
+        const char* name = fst_file_at((unsigned int) offset, &rel);
+        if (name != 0) {
+            int claimed =
+                swap_contents(name, rel, (unsigned char*) addr,
+                              (unsigned int) length);
+            (void) claimed;
+#ifdef PC_DVD_TRACE
+            trace_read(name, rel, (unsigned int) length, claimed);
+#endif
+        }
     }
 
     /* The drive would raise a transfer-complete interrupt. Reads here are

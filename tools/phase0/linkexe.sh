@@ -18,11 +18,18 @@ set -uo pipefail
 # using ld --wrap so neither the SDK nor the game is modified. It reports the
 # shape of each frame -- primitives, display lists, textures, TEV stages --
 # which is the specification a renderer has to satisfy.
+#
+# --trace-dvd reports every disc read that resolves to a file, as the file's
+# name, the offset within it and the length, and whether a byte-order schema
+# claimed it. Writing a schema per format means knowing which files the boot
+# actually touches and in what order; this is how that list is obtained.
 TRACE_GX=0
+TRACE_DVD=0
 ARGS=""
 for a in "$@"; do
   case "$a" in
     --trace-gx) TRACE_GX=1 ;;
+    --trace-dvd) TRACE_DVD=1 ;;
     *) ARGS="$ARGS $a" ;;
   esac
 done
@@ -49,6 +56,9 @@ rm -rf "$OUT"; mkdir -p "$OUT/obj"
 # -fgnu89-inline matches how MWCC treats the `extern inline` math helpers;
 # without it GCC emits one copy per translation unit and they collide.
 CFLAGS="$BITS -w -c -O0 -fgnu89-inline -fno-strict-aliasing"
+if [ "$TRACE_DVD" = 1 ]; then
+  CFLAGS="$CFLAGS -DPC_DVD_TRACE"
+fi
 LDFLAGS="-lm"
 FREESTANDING=0
 STUBFLAGS=""
