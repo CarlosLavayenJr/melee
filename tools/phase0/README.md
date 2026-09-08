@@ -1,3 +1,7 @@
+> **Looking for how to build and run it?** See [`pc/README.md`](../../pc/README.md).
+> This file is the engineering log: how each conclusion was reached, and the
+> traps that cost time getting there.
+
 # Phase 0 — host-compiler survey
 
 Measures how much of the decomp compiles with a normal host compiler
