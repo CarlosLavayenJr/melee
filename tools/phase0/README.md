@@ -128,28 +128,33 @@ tools/phase0/linkexe.sh [-m32|-m64]
 ## Result
 
 ```
-  objects: 1047
-  placeholders: 787
+  objects: 1049
+  placeholders: 765
   linked: 14M
+
+  pc_memory: mapped 24 MB at 0x80000000 and 0xc0000000
+  pc_os: arena 0x80100000 .. 0x81800000 (23 MB)
+
   Program received signal SIGSEGV
-  #0  OSInit ()
+  #0  VIInit ()
   #1  main ()
 ```
 
-A host executable builds and reaches the game's real entry point. It then
-segfaults inside `OSInit()` — the first thing `main()` calls — because that
-function programs GameCube hardware registers that do not exist here.
-
-**This is the shape of the whole port in one backtrace.** Nothing is missing;
-`OSInit` is present and decompiled. It simply does something only a GameCube
-can do. The work is replacing implementations, not supplying absent ones.
+`OSInit()` completes against the host layer in `pc/` and boot reaches
+`VIInit()`, the next call in `main()`.
 
 ## Use the crash point as the progress metric
 
-The binary is not a game and cannot become one by adding placeholders. Its
-value is the position of that crash. Implement a host `OSInit`, and boot moves
-to whatever runs next. That backtrace walking further forward is the most
-honest progress signal available before there is anything to look at.
+The binary is not a game. Its value is where it stops. `main()` in
+`src/melee/gm/gmmain.c` opens with
+
+```c
+OSInit(); VIInit(); DVDInit(); PADInit(); CARDInit(); OSInitAlarm();
+```
+
+so the crash walks that list as each subsystem gets a host implementation.
+That is the most honest progress signal available before there is anything to
+look at.
 
 ## Build notes worth keeping
 
@@ -158,5 +163,20 @@ honest progress signal available before there is anything to look at.
 - `stub.c`, `amcstubs` and `odemustubs` are alternative implementations the
   real build picks between (see the `Object()` list in `configure.py`).
   Compiling all of them together produces duplicate symbols.
+- `OS.c` cannot build off PowerPC -- exception vectors, FPR setup and context
+  switching are MWCC `asm void` bodies. `pc/src/pc_os.c` replaces it.
 - Do not supply your own `main()`. The game has one, in
   `src/melee/gm/gmmain.c`.
+- Derive the placeholder list from **linker** output, not from `nm`. `nm` does
+  not know the host libc already supplies `sinf`, `cosf`, `printf`, `mmap` and
+  17 others; stubbing those shadows the real implementations and crashes in
+  confusing places.
+
+## The memory map is the load-bearing trick
+
+Melee addresses memory by absolute GameCube addresses -- `OSPhysicalToCached(0)`
+expands to the literal pointer `0x80000000`. Rather than rewrite every such
+site, `pc/src/pc_memory.c` maps real pages at those addresses before `main()`
+runs, so the game's own pointer arithmetic stays valid. This works on Linux
+x86-64 today; a Windows port needs the equivalent `VirtualAlloc(MEM_RESERVE)`
+at the same base.

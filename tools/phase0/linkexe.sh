@@ -30,7 +30,9 @@ INCLUDES="-I src -I extern/dolphin/include -I extern/dolphin/include/libc -I ext
 # stub.c / amcstubs / odemustubs are alternative implementations the real build
 # chooses between (see the Object() list in configure.py); MetroTRK is the
 # debug monitor. Linking all of them at once produces duplicate symbols.
-EXCLUDE='dolphin/stub\.c|amcstubs|odemustubs|MetroTRK'
+# OS.c is excluded too: its exception vectors and context switching are MWCC
+# `asm void` bodies with no host equivalent. pc/src/pc_os.c replaces it.
+EXCLUDE='dolphin/stub\.c|amcstubs|odemustubs|MetroTRK|dolphin/os/OS\.c'
 
 compile_one() {
   local f="$1" o
@@ -43,24 +45,27 @@ export -f compile_one
 export CC CFLAGS INCLUDES OUT
 
 echo "Compiling ($CC $BITS)..."
-find src extern -name '*.c' | grep -vE "$EXCLUDE" \
+find src extern pc/src -name '*.c' | grep -vE "$EXCLUDE" \
   | xargs -P "$(nproc)" -I{} bash -c 'compile_one "$@"' _ {} >/dev/null 2>&1
 echo "  objects: $(find "$OUT/obj" -name '*.o' | wc -l)"
 
-cd "$OUT/obj"
-nm -g --defined-only ./*.o 2>/dev/null | awk '{print $NF}' | sort -u > "$OUT/def.txt"
-nm -g -u          ./*.o 2>/dev/null | awk '{print $NF}' | sort -u > "$OUT/undef.txt"
-comm -23 "$OUT/undef.txt" "$OUT/def.txt" > "$OUT/todo.txt"
+# Ask the linker which symbols are genuinely unresolved. Deriving this from nm
+# alone over-reports: it does not know the host libc supplies sinf, printf,
+# mmap and friends, and stubbing those shadows the real implementations.
+# shellcheck disable=SC2086
+"$CC" $BITS -o /dev/null "$OUT"/obj/*.o -lm 2>&1 \
+  | grep -oE "undefined reference to \`[^']*'" \
+  | sed "s/.*\`//; s/'//" | sort -u > "$OUT/todo.txt"
 
 python3 - "$OUT" <<'PY'
 import sys
 out = sys.argv[1]
-skip = {'_GLOBAL_OFFSET_TABLE_', '__stack_chk_fail'}
-syms = [l.strip() for l in open(f'{out}/todo.txt') if l.strip() and l.strip() not in skip]
+syms = [l.strip() for l in open(f'{out}/todo.txt') if l.strip()]
 with open(f'{out}/stubs.c', 'w') as f:
-    f.write('/* Placeholders for symbols nothing in the tree defines. Sized\n'
-            '   generously and untyped, since nm cannot say what is code and\n'
-            '   what is data. */\n#include <stddef.h>\n')
+    f.write('/* Placeholders for symbols nothing provides -- neither the tree nor\n'
+            '   the host libc. Sized generously and untyped, since the linker\n'
+            '   cannot say what is code and what is data. Calling one crashes,\n'
+            '   which is the point: that is where boot stops. */\n#include <stddef.h>\n')
     for s in syms:
         f.write(f'__attribute__((aligned(16))) char {s}[4096];\n')
 print(f'  placeholders: {len(syms)}')
