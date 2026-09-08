@@ -68,7 +68,10 @@ for d in $(find extern/dolphin/src -type d); do INCLUDES="$INCLUDES -I $d"; done
 # debug monitor. Linking all of them at once produces duplicate symbols.
 # OS.c is excluded too: its exception vectors and context switching are MWCC
 # `asm void` bodies with no host equivalent. pc/src/pc_os.c replaces it.
-EXCLUDE='dolphin/stub\.c|amcstubs|odemustubs|MetroTRK|dolphin/os/OS\.c'
+# MSL/printf.c is excluded too: it compiles but is written against MWCC's
+# varargs intrinsics (__builtin_va_info), which have no host counterpart.
+# pc/src/pc_printf.c replaces it.
+EXCLUDE='dolphin/stub\.c|amcstubs|odemustubs|MetroTRK|dolphin/os/OS(Interrupt|Alarm|Time|Cache|Context|Reset|ResetSW)?\.c|MSL/printf\.c|dolphin/pad/pad\.c'
 
 compile_one() {
   local f="$1" o

@@ -288,12 +288,50 @@ deterministic fighting game and should be replaced before anything depends on
 frame-exact behaviour.
 
 ```
-objects: 1121      placeholders: 187      linked: 11M
+objects: 1125      placeholders: 154      linked: 11M
 
 pc_memory: mapped 24 MB RAM and 64 KB MMIO
 pc_os: arena set, 23 MB
-SIGSEGV in __OSSetInterruptHandler ()  <- from VIInit(), from main()
+SIGSEGV in OSSleepThread ()  <- VIWaitForRetrace, db_GetGameLaunchButtonState
 ```
+
+`main()` opens with
+
+```c
+OSInit(); VIInit(); DVDInit(); PADInit(); CARDInit(); OSInitAlarm();
+db_GetGameLaunchButtonState();
+```
+
+and every one of those now returns. Boot stops inside the seventh, which polls
+the controller for the debug boot chord and waits on the vertical retrace.
+
+## What the pc/ layer covers so far
+
+| File | Replaces | Notes |
+|---|---|---|
+| `pc_memory.c` | -- | maps RAM and MMIO at console addresses |
+| `pc_sys_*.c` | -- | host services; freestanding uses raw syscalls |
+| `pc_os.c` | `OS.c` | OSInit and the arena |
+| `pc_os_interrupt.c` | `OSInterrupt.c` | handlers stored, never dispatched |
+| `pc_os_time.c` | `OSTime.c`, `OSAlarm.c` | monotonic clock; alarms queued, never fire |
+| `pc_os_reset.c` | `OSReset.c`, `OSResetSW.c` | callbacks kept in priority order |
+| `pc_pad.c` | `pad.c` | eight entry points, all ports report empty |
+| `pc_printf.c` | `MSL/printf.c` | MWCC varargs intrinsics have no host form |
+| `pc_libc.c` | -- | `sqrt`, `sqrtf`, `floor`, `atanf` |
+
+`src/MSL/stdarg.h` needed a guarded fix of its own: it defines `va_start` in
+terms of `__builtin_va_info`, an MWCC internal with nothing to link against
+elsewhere, so a host build died inside the first `OSReport`. Off MWCC it now
+maps to the compiler's own `__builtin_va_*`.
+
+## The next wall is a stall, not a crash
+
+`VIWaitForRetrace` sleeps until the vertical retrace interrupt wakes it.
+Nothing here raises interrupts, so once `OSSleepThread` exists that call will
+**hang rather than fault** -- exactly what pc_os_interrupt.c and pc_os_time.c
+warn about. Getting past it means driving frames from the port's own loop and
+calling the registered retrace handler directly, which is the point where a
+host port stops emulating the console's control flow and takes it over.
 
 **This run is trustworthy in a way the -m64 one is not.** `u32` is 4 bytes,
 struct layouts match, and pointers do not sign-extend. Placeholders fall from

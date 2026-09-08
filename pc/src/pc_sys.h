@@ -17,4 +17,7 @@ void pc_sys_log(const char* s);
 
 void pc_sys_exit(int code);
 
+/* Nanoseconds from a monotonic source. Only differences are meaningful. */
+unsigned long long pc_sys_mono_ns(void);
+
 #endif

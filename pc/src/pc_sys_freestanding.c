@@ -10,6 +10,8 @@
 #define SYS_exit   1
 #define SYS_write  4
 #define SYS_mmap2 192
+#define SYS_clock_gettime 265
+#define CLOCK_MONOTONIC 1
 
 #define PROT_READ  0x1
 #define PROT_WRITE 0x2
@@ -49,6 +51,14 @@ void pc_sys_log(const char* s)
         n++;
     }
     sys(SYS_write, 2, (long) s, n, 0, 0, 0);
+}
+
+unsigned long long pc_sys_mono_ns(void)
+{
+    struct { long sec; long nsec; } ts = { 0, 0 };
+    sys(SYS_clock_gettime, CLOCK_MONOTONIC, (long) &ts, 0, 0, 0, 0);
+    return (unsigned long long) ts.sec * 1000000000ull +
+           (unsigned long long) ts.nsec;
 }
 
 void pc_sys_exit(int code)
