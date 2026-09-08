@@ -58,3 +58,57 @@ single symbol (`fabsf`) losing to glibc's declaration, and 746 were `M_PI`.
   treat them as the real risk, not the compile errors.
 - Warnings are suppressed (`-w`) to keep the signal on hard errors. Drop that
   flag when you start caring about correctness rather than reachability.
+
+---
+
+# Phase 1 — link check
+
+`tools/phase0/linkcheck.sh` goes a step further: it compiles every file to a
+real object file (full code generation, not just parsing) and then reports
+which symbols nothing in the tree defines.
+
+```sh
+tools/phase0/linkcheck.sh [-m32|-m64]
+```
+
+## Why code generation matters
+
+A syntax pass and a real compile disagree. Before the `math.h` fix below, 1069
+files passed `-fsyntax-only` but only **403** produced object files. The
+difference was one header: `sqrtf`/`sqrt` in `extern/dolphin/include/libc/math.h`
+were implemented with the PowerPC `frsqrte` instruction and PPC float-register
+constraints. GCC accepts that text while parsing and only rejects it when it
+tries to emit instructions — so it fails 666 files at codegen and none at
+syntax check. That header now has a host fallback guarded on `__PPC__`.
+
+## Result
+
+| | |
+|---|---|
+| Objects built | 1069 / 1182 |
+| Unresolved symbols | 790 |
+| ...defined in a file that merely failed to build | 758 |
+| **...genuinely absent from the tree** | **32** |
+
+The 32 fall into four groups:
+
+- **Compiler intrinsics** MWCC provides and GCC does not: `__cntlzw`, `__dcbz`,
+  `__sync`, `__fpclassifyf`, `floor`. Small host equivalents.
+- **Hardware register blocks**: `__cpReg`, `__memReg`, `__peReg`, `__piReg`,
+  `gx`. These are memory-mapped I/O — the actual silicon. This is where a port
+  does its real work.
+- **Data extracted from the retail DOL**: `HSD_DebugFontAtlas`,
+  `HSD_SisLib_FontAtlas`, `stage_info`, and the `un_*` / `gmClassic_*` symbols.
+  See the `extract:` section of `config/GALE01/config.yml` — these come from
+  the original binary, which is why a build needs your own copy of the game.
+- **Toolchain-provided**: `_GLOBAL_OFFSET_TABLE_`, `__stack_chk_fail`.
+
+## The important caveat
+
+**Linking is not working.** Because the Dolphin SDK is itself decompiled, the
+game is nearly self-contained: fix the 113 files and almost everything
+resolves. But those SDK implementations write to GameCube hardware addresses.
+An exe built this way links and then dies the moment it touches `__piReg`.
+
+The porting job is therefore *replacing* implementations, not supplying missing
+ones — which is a different and larger task than this symbol count suggests.

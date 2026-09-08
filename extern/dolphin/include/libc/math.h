@@ -36,9 +36,16 @@ extern inline float sqrtf(float x)
     {
 #ifdef __MWERKS__
         double guess = __frsqrte((double)x);   // returns an approximation to
-#else
+#elif defined(__PPC__) || defined(__powerpc__) || defined(__POWERPC__)
         double guess;
         asm("frsqrte %0, %1" : "=f"(guess) : "f"(x));
+#else
+        /* Host builds: frsqrte is a PowerPC instruction with no equivalent
+           elsewhere, and the "f" constraint names a PPC float register. Use
+           the host's sqrt so non-PowerPC targets can compile this header.
+           NOTE: this is not bit-identical to the Newton-Raphson refinement
+           below, so host builds may differ in the low bits from hardware. */
+        double guess = 1.0 / __builtin_sqrt((double)x);
 #endif
         guess = _half*guess*(_three - guess*guess*x);  // now have 12 sig bits
         guess = _half*guess*(_three - guess*guess*x);  // now have 24 sig bits
@@ -59,9 +66,16 @@ extern inline float sqrt(float x)
     {
 #ifdef __MWERKS__
         double guess = __frsqrte((double)x);   // returns an approximation to
-#else
+#elif defined(__PPC__) || defined(__powerpc__) || defined(__POWERPC__)
         double guess;
         asm("frsqrte %0, %1" : "=f"(guess) : "f"(x));
+#else
+        /* Host builds: frsqrte is a PowerPC instruction with no equivalent
+           elsewhere, and the "f" constraint names a PPC float register. Use
+           the host's sqrt so non-PowerPC targets can compile this header.
+           NOTE: this is not bit-identical to the Newton-Raphson refinement
+           below, so host builds may differ in the low bits from hardware. */
+        double guess = 1.0 / __builtin_sqrt((double)x);
 #endif
         guess = _half*guess*(_three - guess*guess*x);  // now have 12 sig bits
         guess = _half*guess*(_three - guess*guess*x);  // now have 24 sig bits
