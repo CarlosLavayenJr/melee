@@ -226,8 +226,12 @@ static int swap_contents(const char* name, unsigned int rel,
     if (name_ends_with(name, ".ssm")) {
         if (rel == 0 && length >= SFX_HEADER_BYTES) {
             swap_words(addr, SFX_HEADER_BYTES / 4);
+            return 1;
         }
-        return 1;
+        /* Past the header: the entry table and the samples after it. The
+           table is big-endian too and still has no schema, so it reports as
+           unconverted rather than claiming a swap that did not happen. */
+        return 0;
     }
     return 0;
 }
