@@ -234,7 +234,7 @@ already width-correct under `-m32`.
 
 | | `-m64` | `-m32` |
 |---|---|---|
-| Compiles clean | 1080 / 1182 (91%) | **1123 / 1182 (95%)** |
+| Compiles clean | 1088 / 1182 (92%) | **1124 / 1182 (95%)** |
 | Game-code failures | 40 | **0** |
 | **Layout assertion failures** | **~180** | **0** |
 

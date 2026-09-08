@@ -27,10 +27,10 @@ rm -rf "$OUT"; mkdir -p "$OUT/obj"
 # subdirectory goes on the path.
 INCLUDES="-I src -I extern/dolphin/include -I extern/dolphin/include/libc -I extern/dolphin/src"
 for d in $(find extern/dolphin/src -type d); do INCLUDES="$INCLUDES -I $d"; done
-# src/MSL holds the Metrowerks standard library headers the game includes
-# directly -- <printf.h>, <setjmp.h>, <wchar.h>. It goes last so its math.h and
-# ctype.h do not shadow the decomp's own under extern/dolphin/include/libc.
-INCLUDES="$INCLUDES -I src/MSL"
+# src/MSL is added only alongside the freestanding headers. Its stddef.h types
+# intptr_t as `int`, which is right for the 32-bit ABI the decomp targets and
+# collides with the host's 64-bit definition when glibc's headers are also
+# visible. Reaching MSL therefore requires -nostdinc, i.e. the -m32 path.
 
 compile_one() {
   local f="$1" o l

@@ -30,11 +30,26 @@ CFLAGS="$BITS -w -c -O0 -fgnu89-inline -fno-strict-aliasing"
 # sideways -- vi.c includes "__gx.h" from the gx directory -- so every source
 # subdirectory goes on the path.
 INCLUDES="-I src -I extern/dolphin/include -I extern/dolphin/include/libc -I extern/dolphin/src"
+
+# -m32 is the real target. Compiling there works anywhere via the freestanding
+# fallback (see survey.sh), but LINKING additionally needs 32-bit crt and libc
+# *libraries*, which headers alone cannot supply -- install gcc-multilib. Fail
+# early and say so rather than emitting a wall of ld errors.
+if [ "$BITS" = "-m32" ]; then
+  if ! echo '#include <stdio.h>' | "$CC" -m32 -x c -fsyntax-only - 2>/dev/null; then
+    INCLUDES="-nostdinc -I tools/phase0/freestanding -I $("$CC" -print-file-name=include) $INCLUDES -I src/MSL"
+  fi
+  if ! echo 'int main(void){return 0;}' | "$CC" -m32 -x c -o /dev/null - 2>/dev/null; then
+    echo "error: -m32 linking needs 32-bit crt/libc libraries (apt install gcc-multilib)." >&2
+    echo "       survey.sh -m32 still works; only this script needs the libraries." >&2
+    exit 1
+  fi
+fi
 for d in $(find extern/dolphin/src -type d); do INCLUDES="$INCLUDES -I $d"; done
-# src/MSL holds the Metrowerks standard library headers the game includes
-# directly -- <printf.h>, <setjmp.h>, <wchar.h>. It goes last so its math.h and
-# ctype.h do not shadow the decomp's own under extern/dolphin/include/libc.
-INCLUDES="$INCLUDES -I src/MSL"
+# src/MSL is added only alongside the freestanding headers. Its stddef.h types
+# intptr_t as `int`, which is right for the 32-bit ABI the decomp targets and
+# collides with the host's 64-bit definition when glibc's headers are also
+# visible. Reaching MSL therefore requires -nostdinc, i.e. the -m32 path.
 
 # stub.c / amcstubs / odemustubs are alternative implementations the real build
 # chooses between (see the Object() list in configure.py); MetroTRK is the
