@@ -212,11 +212,79 @@ static void swap_words(unsigned char* p, unsigned int words)
     }
 }
 
+static int name_eq(const char* a, const char* b)
+{
+    unsigned int i;
+
+    for (i = 0; a[i] != 0 && b[i] != 0; i++) {
+        if (a[i] != b[i]) {
+            return 0;
+        }
+    }
+    return a[i] == b[i];
+}
+
+static void name_copy(char* dst, const char* src, unsigned int cap)
+{
+    unsigned int i;
+
+    for (i = 0; i + 1 < cap && src[i] != 0; i++) {
+        dst[i] = src[i];
+    }
+    dst[i] = 0;
+}
+
 /* A sound sample map opens with a header the loader reads into a static array
    of eight words (hsd_SynthSFXLoadBuf, synth.static.h) and then indexes for
    sizes and counts. Those eight words are the entire schema for this read; the
    ADPCM samples that follow are bytes and must not be touched. */
 #define SFX_HEADER_BYTES 0x20
+
+/* The table after the header is a run of groups: a count word, a second word,
+   then that many 0x40 records. synth.c walks it by reading the count and
+   striding count * 0x40 + 8 bytes to the next group, so a big-endian count
+   sends the walk somewhere arbitrary -- which is the shape of a hang rather
+   than a crash.
+ *
+ * Swapping the counts alone makes that stride correct without touching the
+ * records, whose field widths are not known: three words per record are u32
+ * offsets that synth.c relocates, and the rest could be 16-bit or bytes.
+ * Swapping them blind would produce a run that goes further and is quietly
+ * wrong, which is worse than one that stops.
+ *
+ * Returns the number of groups walked, which the trace reports: short of the
+ * expected count means a stride left the buffer, and the assumption is wrong.
+ */
+static unsigned int swap_group_counts(unsigned char* addr, unsigned int length,
+                                      unsigned int groups)
+{
+    unsigned int off = 0, g;
+
+    for (g = 0; g < groups; g++) {
+        unsigned int n;
+
+        if (off + 8 > length) {
+            break;
+        }
+        n = be32(addr + off);
+        *(pc_u32*) (addr + off) = n;
+        /* Divide rather than multiply: a count straight off the disc can pick
+           a value whose product with the record size wraps. */
+        if (n > (length - off - 8) / 0x40) {
+            g++; /* this count was swapped; the stride past it is what fails */
+            break;
+        }
+        off += n * 0x40 + 8;
+    }
+    return g;
+}
+
+/* The header read and the table read arrive as separate requests, so the group
+   count from the header is carried across to the read that needs it. synth.c
+   loads one map at a time, so a single slot is enough -- and it is keyed by
+   name so a mismatched pairing converts nothing. */
+static char sfx_name[64];
+static unsigned int sfx_groups;
 
 /* Returns 1 when a schema claimed the read, 0 when the format is still
    unconverted. */
@@ -226,11 +294,25 @@ static int swap_contents(const char* name, unsigned int rel,
     if (name_ends_with(name, ".ssm")) {
         if (rel == 0 && length >= SFX_HEADER_BYTES) {
             swap_words(addr, SFX_HEADER_BYTES / 4);
+            /* Word two is the group count; the table read needs it. */
+            sfx_groups = ((const pc_u32*) addr)[2];
+            name_copy(sfx_name, name, sizeof sfx_name);
             return 1;
         }
-        /* Past the header: the entry table and the samples after it. The
-           table is big-endian too and still has no schema, so it reports as
-           unconverted rather than claiming a swap that did not happen. */
+        if (rel == SFX_HEADER_BYTES && sfx_groups != 0 &&
+            name_eq(name, sfx_name)) {
+            unsigned int walked =
+                swap_group_counts(addr, length, sfx_groups);
+#ifdef PC_DVD_TRACE
+            pc_sys_log("dvd: groups ");
+            log_uint(walked);
+            pc_sys_log("/");
+            log_uint(sfx_groups);
+            pc_sys_log("\n");
+#endif
+            return 1;
+        }
+        /* The samples. ADPCM bytes -- nothing to swap. */
         return 0;
     }
     return 0;
