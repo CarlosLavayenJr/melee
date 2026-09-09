@@ -174,3 +174,8 @@ fabric.properties
 
 # Android studio 3.1+ serialized cache file
 .idea/caches/build_file_checksums.ser
+
+# User-supplied disc image. Never commit or distribute game data: the port
+# reads a legally dumped GALE01 image the user provides at runtime.
+*.iso
+*.gcm

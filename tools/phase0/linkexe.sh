@@ -185,7 +185,13 @@ for d in $(find extern/dolphin/src -type d); do INCLUDES="$INCLUDES -I $d"; done
 # scissor, roll, near/far, and the projection-specific tail) before CObjLoad
 # reads them -- a correctness fix, not a renderer feature, so it applies to
 # every build the same way pc_dvd.c's archive schema does.
-LDFLAGS="$LDFLAGS -Wl,--wrap=HSD_CObjInit -Wl,--wrap=HSD_CObjLoadDesc"
+#
+# pc_pad_alarm.c wraps HSD_PadGetRawQueueCount for the same reason: it pumps
+# pc_os_time.c's OSAlarm queue (see pc_pad_alarm.c) so gm_801A4D34's
+# pad-queue wait loop -- which polls this entry point directly and never
+# sleeps or yields -- doesn't spin forever waiting on an alarm nothing else
+# would ever deliver.
+LDFLAGS="$LDFLAGS -Wl,--wrap=HSD_CObjInit -Wl,--wrap=HSD_CObjLoadDesc -Wl,--wrap=HSD_PadGetRawQueueCount"
 
 WRAPPED="GXBegin GXCallDisplayList GXLoadTexObj GXSetTevOrder GXSetProjection GXLoadPosMtxImm GXCopyDisp"
 # pc_gx_trace.c implements only the list above. pc_gx_render.c implements

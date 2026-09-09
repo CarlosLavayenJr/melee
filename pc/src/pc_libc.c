@@ -5,16 +5,45 @@
  * cosf, tanf. Four routines are missing because on hardware they came from the
  * Metrowerks runtime rather than from MSL's sources.
  *
- * sqrt, sqrtf and floor compile to single x86 instructions via GCC builtins,
- * so they cost nothing and are exact.
+ * sqrt, sqrtf and floor were meant to compile to single x86 instructions via
+ * GCC builtins, and do at -O2 -- but this build is -O0 (CFLAGS in
+ * tools/phase0/linkexe.sh), and at -O0 GCC does not lower __builtin_sqrt(f)
+ * to a hardware instruction; it lowers it to a *call* to the C library
+ * function named sqrt(f), on the assumption libm provides one. Since this
+ * file *is* that library function, the call resolved to itself: infinite
+ * recursion, confirmed via gdb showing sqrtf calling sqrtf calling sqrtf
+ * until the stack gave out. Inline asm sidesteps the lowering question
+ * entirely -- there is no call for -O0 to get wrong. floor has no matching
+ * x87 opcode (frndint follows the FPU's rounding-control word, not
+ * round-toward-negative-infinity), so it stays in portable C instead of
+ * builtin form, for the same self-recursion reason.
  */
 #include "pc_libc.h"
 
 #include <stddef.h> /* NULL */
 
-double sqrt(double x)  { return __builtin_sqrt(x); }
-float  sqrtf(float x)  { return __builtin_sqrtf(x); }
-double floor(double x) { return __builtin_floor(x); }
+double sqrt(double x)
+{
+    double r;
+    __asm__("fsqrt" : "=t"(r) : "0"(x));
+    return r;
+}
+
+float sqrtf(float x)
+{
+    float r;
+    __asm__("fsqrt" : "=t"(r) : "0"(x));
+    return r;
+}
+
+double floor(double x)
+{
+    double truncated = (double) (long long) x;
+    if (x < 0.0 && truncated != x) {
+        truncated -= 1.0;
+    }
+    return truncated;
+}
 
 /* atanf has no builtin. This is the standard odd-polynomial approximation on
  * |x| <= 1 with the usual reduction for larger arguments -- accurate to a few

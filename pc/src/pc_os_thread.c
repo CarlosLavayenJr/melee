@@ -60,6 +60,11 @@ void OSInitThreadQueue(OSThreadQueue* queue)
    arrive on their own interrupt; here the frame tick is the safe point. */
 extern void pc_ar_poll(void);
 
+/* Deliver due OSAlarm callbacks (pc_os_time.c); same reasoning as
+   pc_ar_poll -- these arrive on the decrementer interrupt on hardware, and
+   nothing here raises interrupts. */
+extern void pc_alarm_poll(void);
+
 /* Advance one video frame by invoking the handler the game registered. */
 static void pc_vi_tick(void)
 {
@@ -68,6 +73,7 @@ static void pc_vi_tick(void)
         handler(PC_INTERRUPT_PI_VI, NULL);
     }
     pc_ar_poll();
+    pc_alarm_poll();
 }
 
 void OSSleepThread(OSThreadQueue* queue)

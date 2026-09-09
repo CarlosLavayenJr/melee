@@ -7,11 +7,15 @@
  * Time here comes from the monotonic clock, scaled to the bus clock the game
  * expects, so OSGetTick keeps advancing at the rate the SDK documents.
  *
- * Alarms are recorded but never fire. On hardware the decrementer interrupt
- * walks the queue; nothing raises interrupts here (see pc_os_interrupt.c), so
- * the queue is bookkeeping the port's frame loop will eventually drive. Code
- * that *waits* on an alarm will therefore spin rather than proceed -- when
- * boot next stalls instead of crashing, this is the first place to look.
+ * Alarms are recorded and delivered from pc_alarm_poll() below rather than
+ * from a decrementer interrupt: nothing raises interrupts here (see
+ * pc_os_interrupt.c), so a host call site has to stand in for the exception
+ * path. pc_os_thread.c's pc_vi_tick() calls pc_alarm_poll() on every sleep or
+ * yield, the same place it already delivers ARAM completions -- but not
+ * every wait loop in the game sleeps or yields (gm_801A4D34's pad-queue wait
+ * just polls HSD_PadGetRawQueueCount() in a tight loop), so callers that
+ * gate on an alarm-driven counter without ever yielding need pc_alarm_poll()
+ * wrapped in directly at their own poll point; see pc_pad_alarm.c.
  */
 #include "pc_sys.h"
 
@@ -105,14 +109,64 @@ void OSSetAbsAlarm(OSAlarm* alarm, OSTime time, OSAlarmHandler handler)
     alarm_link(alarm);
 }
 
+/* Matches the real InsertAlarm's catch-up: start is a base time, not
+   necessarily in the future (lb_80019628 passes the same small tick count as
+   both start and period), so the first fire has to be walked forward past
+   now by whole periods rather than left in the past where pc_alarm_poll()
+   would fire it once and then -- since a period this short is otherwise
+   always due -- fire it again on every single poll. */
 void OSSetPeriodicAlarm(OSAlarm* alarm, OSTime start, OSTime period,
                         OSAlarmHandler handler)
 {
+    OSTime now = OSGetTime();
+    OSTime fire = start;
     alarm->handler = handler;
     alarm->start = start;
     alarm->period = period;
-    alarm->fire = start;
+    if (fire <= now && period > 0) {
+        fire += period * ((now - fire) / period + 1);
+    }
+    alarm->fire = fire;
     alarm_link(alarm);
+}
+
+/* Stand-in for the decrementer exception path: called from pc_vi_tick() and
+   from any poll point that gates on an alarm-driven counter without ever
+   sleeping or yielding. Restarts the scan after each handler call since a
+   handler is free to add, cancel, or reschedule alarms (OSCancelAlarm,
+   OSSetPeriodicAlarm re-arming from inside its own callback, etc), same as
+   the real dispatcher processing one alarm per interrupt. */
+void pc_alarm_poll(void)
+{
+    OSAlarm* a;
+    OSTime now;
+    int fired;
+
+again:
+    now = OSGetTime();
+    fired = 0;
+    for (a = alarm_head; a != NULL; a = a->next) {
+        OSAlarmHandler handler;
+        if (a->handler == NULL || a->fire > now) {
+            continue;
+        }
+        handler = a->handler;
+        if (a->period > 0) {
+            OSTime fire = a->fire + a->period;
+            if (fire <= now) {
+                fire += a->period * ((now - fire) / a->period + 1);
+            }
+            a->fire = fire;
+        } else {
+            OSCancelAlarm(a);
+        }
+        handler(a, NULL);
+        fired = 1;
+        break;
+    }
+    if (fired) {
+        goto again;
+    }
 }
 
 void OSCancelAlarm(OSAlarm* alarm)
