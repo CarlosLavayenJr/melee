@@ -190,6 +190,36 @@ void pc_stage_head_to_native(UnkStageDat* d)
     swap_s32(&d->unk24);
     swap_s32(&d->unk2C);
 
+    /* unk0 is `void*` in the header, but Ground_801C34AC declares the real
+       shape inline: { void* joint; s16* pairs; s32 pair_count; }, unk4 of
+       them. The two pointers are relocation-named and already based; the
+       count and the index array behind it are not, which is what sent
+       ground.c:1951 walking from 0x81800000 with a count of 0x14000000 --
+       twenty, byte-reversed. */
+    if (d->unk0 != NULL && d->unk4 != 0) {
+        struct StageJointPairs {
+            void* joint;
+            s16* pairs;
+            s32 pair_count;
+        }* e = d->unk0;
+
+        check_array(e, d->unk4, sizeof *e, "joint pair entry count");
+        for (i = 0; i < d->unk4; i++) {
+            if (!pc_hsd_claim(&e[i], sizeof e[i], PC_HSD_STAGEJOINTS)) {
+                continue;
+            }
+            swap_s32(&e[i].pair_count);
+            if (e[i].pairs != NULL && e[i].pair_count != 0) {
+                int k;
+                check_array(e[i].pairs, e[i].pair_count, sizeof e[i].pairs[0],
+                            "joint pair count");
+                for (k = 0; k < e[i].pair_count; k++) {
+                    swap_s16(&e[i].pairs[k]);
+                }
+            }
+        }
+    }
+
     if (d->unk28 == NULL || d->unk2C == 0) {
         return;
     }

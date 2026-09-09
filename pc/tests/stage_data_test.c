@@ -200,6 +200,8 @@ static void test_native_data_is_left_alone(void)
 #define ENTRY_TABLE 0x0900
 #define ENTRY_A 0x0A00
 #define ENTRY_B 0x0A20
+#define PAIR_ENTRIES 0x0B00
+#define PAIR_INDICES 0x0B40
 
 static void build_head(unsigned char* b)
 {
@@ -208,7 +210,7 @@ static void build_head(unsigned char* b)
     UnkStageDatInternal** table = (UnkStageDatInternal**) (b + ENTRY_TABLE);
 
     memset(b + HEAD_OFF, 0, 0x400);
-    be32(h + 0x04, 1);
+    be32(h + 0x04, 1); /* unk4: one joint-pair entry at unk0 */
     be32(h + 0x0C, 2);
     be32(h + 0x14, 3);
     be32(h + 0x1C, 4);
@@ -219,6 +221,15 @@ static void build_head(unsigned char* b)
     table[1] = (UnkStageDatInternal*) (b + ENTRY_B);
     be32(b + ENTRY_A + 4, 0x00000012);
     be32(b + ENTRY_B + 4, 0x00000034);
+
+    /* unk0: { void* joint; s16* pairs; s32 pair_count; }, as
+       Ground_801C34AC declares it. */
+    d->unk0 = b + PAIR_ENTRIES;
+    *(s16**) (b + PAIR_ENTRIES + 4) = (s16*) (b + PAIR_INDICES);
+    be32(b + PAIR_ENTRIES + 8, 3);
+    be16(b + PAIR_INDICES + 0, 0x0007);
+    be16(b + PAIR_INDICES + 2, 0xFFFF); /* -1, a real sentinel here */
+    be16(b + PAIR_INDICES + 4, 0x0102);
 }
 
 static void test_head_converts(unsigned char* b)
@@ -236,6 +247,12 @@ static void test_head_converts(unsigned char* b)
     assert((unsigned char*) d->unk28 == b + ENTRY_TABLE); /* pointer kept */
     assert(d->unk28[0]->unk4 == 0x12);
     assert(d->unk28[1]->unk4 == 0x34);
+    {
+        struct { void* joint; s16* pairs; s32 pair_count; }* e = d->unk0;
+        assert(e->pair_count == 3);
+        assert((unsigned char*) e->pairs == b + PAIR_INDICES);
+        assert(e->pairs[0] == 7 && e->pairs[1] == -1 && e->pairs[2] == 0x102);
+    }
 
     memcpy(snapshot, b, sizeof snapshot);
     pc_stage_head_to_native(d);

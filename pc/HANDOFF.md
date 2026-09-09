@@ -1,32 +1,53 @@
 # Handoff — September 9, 2026 checkpoint
 
-## Current blocker: stage light list, in Ground_801C466C
+## Current state: two known stops in VS stage setup, plus one open question
 
-Four more schemas landed below and boot now runs deep into VS stage setup,
-stopping on an assert rather than a segfault:
+Runs are NOT deterministic -- the attract-mode demo picks a stage at random,
+and different stages take different paths -- so a single clean run proves
+nothing. Sample several. Across the last set, three outcomes appeared:
+
+**1. `ground.c:2526`, the most common.** `Ground_801C43C4` cannot find a
+natively declared `HSD_LightAnim` in the stage's shadow-entry array:
 
 ```
 HSD_ASSERT(3652, 0)  Ground_801C43C4 (arg0=Ground_803E069C) ground.c:2526
-  Ground_801C466C () ground.c:2726
-  Ground_801C0800 (pair) ground.c:508 -> Stage_8022524C () stage.c:520
-  fn_8016E730(vs_enter_data) gm_16AE.c:2007 -> gm_Scene_Vs_OnEnter
+  Ground_801C466C () ground.c:2726 -> Ground_801C0800 ground.c:508
+  Stage_8022524C () stage.c:520 -> fn_8016E730 gm_16AE.c:2007
 ```
 
-Read it before writing another schema, because this one may not be one.
-`arg0` is `Ground_803E069C`, a natively declared `HSD_LightAnim[]` in
-ground.c, reached through the native fallback light list `Ground_803E06C8`.
-That fallback is only used when the stage's own lights are absent, so the
-first question is why `stage_info.map_plit` is null -- whether this stage's
-archive genuinely has no `map_plit` symbol, or whether something upstream is
-losing it. `Ground_801C43C4` then searches the shadow-entry array
-(`UnkStageDat::unk20`, count `unk24`) for that native pointer and asserts when
-it is missing, which it always will be for a native fallback.
+Read this one before writing a schema for it, because it may not be one.
+`arg0` is `Ground_803E069C`, a native `HSD_LightAnim[]` in ground.c reached
+through the native fallback light list `Ground_803E06C8`. `Ground_801C466C`
+picks that fallback only when no entry in `stage_datas[grkind]->callbacks` has
+`flags_b0 == 1`, which is native game data, not archive data. So the question
+is whether that selection is correct, and whether `UnkStageDat::unk24` -- the
+shadow-entry count the search runs over, which only became a real number with
+the map_head schema -- is right for this stage. A native fallback pointer will
+never be in an archive-sourced array, so if both are correct then the assert
+is reachable on console too and something further upstream is wrong.
 
-Note that `unk24` only became a real count with the map_head schema below;
-before that it was big-endian and this path was never reached. So confirm what
-`unk24` and `map_plit` actually hold on this stage before assuming the assert
-is a byte-order problem at all. `map_plit` is a `LightList**` and can be
-converted through the same symbol hook if it turns out to need it.
+**2. `particle.c:207`, "psInitDataBanks: unknown version".** A real gap, with a
+known fix that is NOT in this commit. `grdatfiles.c` has two branches: the
+normal one calls `psInitDataBank`, which calls `psInitDataBankLocate` (wrapped,
+so the banks get converted) and then `psInitDataBankLoad`. The preloaded-
+archive branch calls `psInitDataBankLoad` DIRECTLY, so the banks were never
+converted and Load panics on a byte-reversed version.
+
+Routing `map_ptcl` and `map_texg` through the `HSD_ArchiveGetPublicAddress`
+symbol hook fixes it -- two `else if` arms calling
+`pc_hsd_particle_banks_to_native(p, NULL, NULL)` and `(NULL, p, NULL)` -- and
+that was tried and did remove this panic. It was reverted before committing
+because it introduced item 3 below and there was no time to tell whether the
+two are related. Redo it, then diagnose 3 with it in place.
+
+**3. `pc_hsd_endian: descriptor outside archive or conflicting schema`.**
+Appeared only in runs with the item-2 change applied, so it is probably caused
+by it, but that is not established -- the run-to-run variation is large enough
+that it could have been present already. This abort comes from `pc_hsd_claim`
+finding a first word already claimed under a DIFFERENT schema kind, which
+means two schemas disagree about what lives at one address. Get a backtrace on
+the abort and print the address and both kinds before changing anything; do
+not widen the claim rules to make it go away.
 
 ## What is verified this session
 
