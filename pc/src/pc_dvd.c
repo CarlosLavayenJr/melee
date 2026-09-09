@@ -395,6 +395,93 @@ static unsigned int swap_sem_header(unsigned char* addr, unsigned int length)
     return pos;
 }
 
+/* Every model, animation, texture and UI element in the game ships as an HSD
+   archive (.dat): a fixed header, then a data body, a relocation table, a
+   public-symbol table and an extern-symbol table, in that order -- sizes for
+   all but the body given by counts in the header. archive.c (HSD_ArchiveParse)
+   is the decomp's own account of this layout; this mirrors it rather than
+   guessing at it independently.
+ *
+ * The header and all three tables are fully specified -- every field is a
+   known-width u32, so swapping them outright is safe. The body is not: it is
+   whatever the object stored there is, and nothing here knows if a given word
+   in it is a pointer, a float, or an untyped byte run (texture pixels,
+   compressed data). Guessing wrong there is exactly the failure mode this
+   project has avoided everywhere else: it does not stop, it runs on and is
+   quietly wrong.
+ *
+ * The relocation table itself says which body words are pointers, though:
+   each entry names one offset into the body that HSD_ArchiveParse's own
+   Locate() adds the archive's load address to, in place, after this runs.
+   Swapping exactly those words -- and no others in the body -- is safe for
+   the same reason swapping the relocation table's offsets is: the format
+   itself vouches for their width and meaning, nothing else does. */
+static void swap_hsd_archive(unsigned char* addr, unsigned int length)
+{
+    pc_u32 data_size, nb_reloc, nb_public, nb_extern;
+    unsigned int offset;
+    unsigned int i;
+    unsigned char* body;
+
+    if (length < 0x20) {
+        return;
+    }
+
+    /* file_size, data_size, nb_reloc, nb_public, nb_extern: words 0-4.
+       version[4] at 0x14 is bytes, left alone. pad[2] at 0x18: words 6-7. */
+    swap_words(addr, 5);
+    swap_words(addr + 0x18, 2);
+
+    /* Plain dereferences, not be32(): swap_words already put these four in
+       host order, so reading them as if they were still big-endian would
+       swap them a second time. */
+    data_size = ((const pc_u32*) addr)[1];
+    nb_reloc = ((const pc_u32*) addr)[2];
+    nb_public = ((const pc_u32*) addr)[3];
+    nb_extern = ((const pc_u32*) addr)[4];
+
+    offset = 0x20;
+    body = addr + offset;
+    if (data_size != 0) {
+        offset += data_size;
+    }
+    if (nb_reloc != 0) {
+        if (offset + nb_reloc * 4 > length) {
+            return;
+        }
+        swap_words(addr + offset, nb_reloc);
+        /* Each relocation entry is the body offset of one pointer word,
+           itself now in host order -- exactly what is needed to reach in
+           and swap that one word before Locate() adds the load address to
+           it. */
+        for (i = 0; i < nb_reloc; i++) {
+            pc_u32 reloc_offset = ((const pc_u32*) (addr + offset))[i];
+            if (reloc_offset + 4 <= data_size) {
+                swap_words(body + reloc_offset, 1);
+            }
+        }
+        offset += nb_reloc * 4;
+    }
+    if (nb_public != 0) {
+        /* {offset, symbol} pairs: two words each. */
+        if (offset + nb_public * 8 > length) {
+            return;
+        }
+        swap_words(addr + offset, nb_public * 2);
+        offset += nb_public * 8;
+    }
+    if (nb_extern != 0) {
+        if (offset + nb_extern * 8 > length) {
+            return;
+        }
+        swap_words(addr + offset, nb_extern * 2);
+        offset += nb_extern * 8;
+    }
+    /* Whatever remains -- the symbol table -- is a run of NUL-terminated
+       names referenced by the offsets just swapped above. Bytes; left as
+       they are, same as the sample map's own string data. */
+}
+
 /* Returns 1 when a schema claimed the read, 0 when the format is still
    unconverted. */
 static int swap_contents(const char* name, unsigned int rel,
@@ -434,6 +521,17 @@ static int swap_contents(const char* name, unsigned int rel,
     if (name_ends_with(name, ".sem")) {
         if (rel == 0) {
             swap_sem_header(addr, length);
+            return 1;
+        }
+        return 0;
+    }
+    /* .dat and .usd are the same HSD archive format under two extensions --
+       confirmed by both hitting HSD_ArchiveParse's own byte-order check
+       (archive.c) -- and between them are the great majority of the disc's
+       content: characters, stages, effects, UI. */
+    if (name_ends_with(name, ".dat") || name_ends_with(name, ".usd")) {
+        if (rel == 0) {
+            swap_hsd_archive(addr, length);
             return 1;
         }
         return 0;
