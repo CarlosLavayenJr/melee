@@ -19,6 +19,7 @@
  * all of dvdfs.c are already written against it.
  */
 #include "pc_sys.h"
+#include "pc_clock.h"
 
 #define GC_RAM_CACHED 0x80000000UL
 
@@ -70,6 +71,11 @@ void pc_bootinfo_init(void)
     info->consoleType = 1; /* retail */
     info->FSTLocation = fst;
     info->FSTMaxLength = sizeof(pc_fst_entry);
+
+    /* SDK time conversions read these IPL words directly, outside OSBootInfo.
+       Publish native-order values before any game/SDK initialization. */
+    *(pc_u32*) (GC_RAM_CACHED + 0xf8) = PC_BUS_CLOCK;
+    *(pc_u32*) (GC_RAM_CACHED + 0xfc) = PC_CORE_CLOCK;
 
     /* arenaLo/arenaHi stay zero: OSInit reads zero as "use the linker's
        bounds", and pc_os.c sets the real ones. */

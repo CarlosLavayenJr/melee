@@ -1,5 +1,33 @@
 # Handoff — September 9, 2026 checkpoint
 
+## Latest: clock initialization fixed; content-bearing movie frames verified
+
+`pc_bootinfo_init` now publishes the IPL bus/core clock words (162/486 MHz).
+`pc_clock.h` shares those values with the host timebase. The nanosecond-to-tick
+conversion also no longer overflows after ~455 seconds, and its epoch handles
+a monotonic source initially returning zero.
+
+Real runs reached decoded frames 10 and 90. GDB at the movie's GXInitTexObj:
+alarm.period=675000, handler=fn_8001F2A4, frame=90, counter=180, buffered=31.
+The user provided confirm input during these runs; no scene-state override.
+Frame 90's dumped Y/U/V planes were untiled and converted for diagnostic viewing:
+recognizable blue sky/trophy imagery, not a flat frame. This confirms real
+content decoding, NOT bit-exact agreement with console output. Dumps/previews
+stay in ignored build/ and are not committed. Still no movie pixels on-screen:
+the next task is interpreting the four-stage TEV program in sobjlib.c.
+
+`pc/tests/os_time_test.c` passes startup-word/SDK conversion tests, a simulated
+24-hour timebase, repeated 60 Hz periodic callbacks, catch-up, cancellation and
+one-shot delivery. Link pc_bootinfo.c and pc_os_time.c with the usual 32-bit host
+test flags (no SDK libc include), compat.h, and --large-address-aware.
+Clock consumers audited include lb_0195.c frame/pad pacing, lbtime.c, gmopening.c
+performance reporting, and SDK device timeouts. Calendar dates are still the
+existing approximate host implementation; not fixed or claimed here.
+
+---
+
+## Previous handoff (clock blocker below is now resolved)
+
 ## Current blocker: the movie decodes but never advances past frame 0
 
 `__OSBusClock` at 0x800000F8 is zero. Nothing in the host layer ever writes it

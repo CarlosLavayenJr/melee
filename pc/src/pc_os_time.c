@@ -18,6 +18,7 @@
  * wrapped in directly at their own poll point; see pc_pad_alarm.c.
  */
 #include "pc_sys.h"
+#include "pc_clock.h"
 
 #include <dolphin/os.h>
 #include <dolphin/os/OSAlarm.h>
@@ -25,7 +26,6 @@
 
 /* The SDK derives its tick rate from the bus clock; retail hardware runs a
    162 MHz bus, and OS_TIMER_CLOCK is a quarter of it. */
-#define PC_TIMER_CLOCK (162000000u / 4u)
 #define NS_PER_SEC     1000000000ull
 
 static OSAlarm* alarm_head;
@@ -35,17 +35,24 @@ static int alarm_initialized;
 static unsigned long long pc_mono_ns(void)
 {
     static unsigned long long base;
+    static int initialized;
     unsigned long long now = pc_sys_mono_ns();
-    if (base == 0) {
+    if (!initialized) {
         base = now;
+        initialized = 1;
     }
     return now - base;
 }
 
 OSTime OSGetTime(void)
 {
+    unsigned long long ns;
     pc_watch_hit(PC_WATCH_OS_TIME);
-    return (OSTime) ((pc_mono_ns() * PC_TIMER_CLOCK) / NS_PER_SEC);
+    ns = pc_mono_ns();
+    /* Multiplying the entire nanosecond count overflowed after ~455 seconds.
+       Split whole seconds from the fraction before scaling. */
+    return (OSTime) ((ns / NS_PER_SEC) * PC_TIMER_CLOCK +
+                    ((ns % NS_PER_SEC) * PC_TIMER_CLOCK) / NS_PER_SEC);
 }
 
 OSTick OSGetTick(void) { return (OSTick) OSGetTime(); }
