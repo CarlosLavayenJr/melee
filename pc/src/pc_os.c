@@ -131,6 +131,9 @@ BOOL OSRestoreInterrupts(BOOL level)
     return prev;
 }
 
+/* dvdfs.c defines it; the real OSInit publishes it. See the assignment below. */
+extern unsigned long __DVDLongFileNameFlag;
+
 void OSInit(void)
 {
     if (os_initialized) {
@@ -143,6 +146,14 @@ void OSInit(void)
        mapped the address range, so setting the water marks is the whole job. */
     OSSetArenaLo((void*) ARENA_LO);
     OSSetArenaHi((void*) ARENA_HI);
+
+    /* Except for this one word. dvdfs.c enforces 8.3 filenames unless it is
+       set, and the real OSInit sets it unconditionally (OS.c:168) -- so on
+       hardware the restriction never applies. Melee ships names that do not
+       fit 8.3 at all, PlKbNrCpDk.dat among them, and leaving the flag zero
+       turns DVDConvertPathToEntrynum's own diagnostic panic into the game's
+       stopping point the first time Kirby's copy-ability data is opened. */
+    __DVDLongFileNameFlag = 1;
 
     /* OSReport routes through MSL's printf, which is not wired to an output
        device yet, so announce this over the host log instead. */

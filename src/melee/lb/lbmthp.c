@@ -125,11 +125,13 @@ static void fn_8001E910(int arg0, int arg1, void* arg2, int cancelflag)
         var_r0 = streamPlayer->unk_8C - 1;
     }
     streamPlayer->currPackedSize = MTH_FRAME_SIZE(streamPlayer->frame_buffers[var_r0]);
-#ifdef PC_GX_RENDERER
-    if (streamPlayer->currPackedSize > streamPlayer->unk_100) {
-        pc_sys_log("pc_mth: asynchronous frame exceeds buffer size\n"); pc_sys_exit(1);
-    }
-#endif
+    /* Not checked here. This reads the size of the NEXT frame out of the front
+       of the buffer that was just filled, and at the end of the movie -- or
+       once lbMthp_8001F800 has cleared unk_70 to stop it -- there is no next
+       frame, so the word is whatever the last frame left behind. The game
+       never uses it in that case, because the request below is gated on
+       unk_70 and unk_74. Validate at the point of use instead, where an
+       oversized value would actually overrun a frame buffer. */
     if (streamPlayer->unk_90 != streamPlayer->unk_8C &&
         streamPlayer->unk_70 != 0)
     {
@@ -144,6 +146,12 @@ static void fn_8001E910(int arg0, int arg1, void* arg2, int cancelflag)
                              streamPlayer->file_entrynum,
                              streamPlayer->curr_file_offset);
 
+#ifdef PC_GX_RENDERER
+            if (streamPlayer->currPackedSize > streamPlayer->unk_100) {
+                pc_sys_log("pc_mth: streamed frame exceeds buffer size\n");
+                pc_sys_exit(1);
+            }
+#endif
             HSD_DevComRequest(
                 streamPlayer->file_entrynum, streamPlayer->curr_file_offset,
                 (uintptr_t) streamPlayer->frame_buffers[streamPlayer->unk_8C],
@@ -430,6 +438,12 @@ s32 fn_8001F13C(THPDecComp* streamPlayer)
                              "filnum = %d, ofs = %d, by sugano.",
                              streamPlayer->file_entrynum,
                              streamPlayer->curr_file_offset);
+#ifdef PC_GX_RENDERER
+            if (streamPlayer->currPackedSize > streamPlayer->unk_100) {
+                pc_sys_log("pc_mth: streamed frame exceeds buffer size\n");
+                pc_sys_exit(1);
+            }
+#endif
             HSD_DevComRequest(
                 streamPlayer->file_entrynum, streamPlayer->curr_file_offset,
                 streamPlayer->frame_buffers[streamPlayer->unk_8C],

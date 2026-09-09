@@ -1,5 +1,131 @@
 # Handoff — September 9, 2026 checkpoint
 
+## Current blocker: particle data bank byte order, at VS scene entry
+
+The title staging blocker below is fixed and boot now runs past the opening
+movie and the title into `gm_Scene_Vs_OnEnter`, where it segfaults:
+
+```
+psInitDataBankLocate (cmdBank=0x802ef360, texBank=0x80300b60, formBank=0x0)
+    at src/sysdolphin/baselib/particle.c:214   cmd[2] = cmd[2] & 0xF1FFFFFF;
+  efAsync_OnLoad (data=0x802eef40, length=1334111) efasync.c:1282
+  lbDvd_GetPreloadedArchive (entry_num=215) -> lbDvd_8001819C("EfCoData.dat")
+  efAsync_LoadSync(idx=0) -> fn_8016E730(vs_enter_data) gm_16AE.c:1992
+  gm_Scene_Vs_OnEnter
+```
+
+The locals are plainly still big-endian: `version = 16896` (0x4200, which is
+0x42 = 66 swapped, and the function branches on `version >= 0x44`),
+`num2 = 6290752` (0x600100), `base`/`ptr` pointing at 0x145b5f, and
+`cmd = 0x88ccb500`, which is what actually faults.
+
+This is a descriptor schema, not a provenance or staging problem. The archive
+itself is converted correctly now: `map_ptcl` and `map_texg` are reached
+through `HSD_ArchiveGetPublicAddress`, so the header, tables and every
+relocation-named pointer are already in host order. What is not converted is
+the particle bank's own interior — the command counts at `((s32*) cmdBank)[1]`
+and `[2]`, the version word, the texture-group count at `((s32*) texBank)[0]`,
+and the command words `psInitDataBankLocate` masks and ORs. None of those are
+named by the relocation table, so nothing generic can know their width.
+
+Write it as a schema the same way the material graph was done in
+`pc_hsd_swap.c`: read `particle.c` for the layout it walks, convert at the one
+entry point (`psInitDataBankLocate`, wrapped), guard with `pc_hsd_claim` so it
+runs once and skips natively built banks, and validate after converting —
+a version outside the range `particle.c` branches on should abort with a
+diagnostic rather than walk a bank that will fault. Do NOT widen provenance
+bounds or skip the assert to get past it.
+
+## What is verified this session
+
+Archive conversion moved from DVD-read time to consumption time
+(`pc/src/pc_hsd_archive.c`). This is the fix for the title staging blocker
+recorded in the previous handoff, and it removes three separate defects that
+all came from converting too early:
+
+- A large archive arrives in several reads. Only the first saw `rel == 0`, and
+  since its length was far below the archive's stated size the body-size check
+  tripped and the relocation, public and extern tables were never converted at
+  all. The recurring `pc_dvd: truncated HSD archive body` line was exactly
+  this. It no longer appears in a full run.
+- `devcom.c` does not read into final memory: it stages DVD chunks through two
+  16 KB relay buffers and ARAM before copying them where the archive will live.
+  Conversion at read time therefore ran against a relay buffer, and
+  `pc_hsd_archive_body` correctly refused an address outside the game's RAM
+  window. That refusal was the abort entering `gm_Scene_Title_OnEnter`. The
+  buffer address was never the bug; the timing was.
+- Provenance recorded against a staging buffer does not follow the bytes to
+  their destination, so descriptor schemas would not have applied even if the
+  address had been accepted.
+
+An archive is whole, contiguous and final in exactly one place: when a consumer
+parses it. `HSD_ArchiveParse` and `lbArchiveRelocate` are those places, and
+every `.dat` consumer reaches one of them — `lbArchive_InitializeDAT`,
+`efAsync_OnLoad` and `grDatFiles_801C5FC0` all funnel into the first. Both are
+now wrapped.
+
+Doing it exactly once needs no extra bookkeeping, because both callees already
+compare the archive's own `file_size` field against the caller's size as a
+byte-order check. An archive whose stated size already equals the caller's is
+in host order and is left alone, so re-parsing a converted buffer — or
+relocating a copy of one, which `ftdata.c` does to fighter animation data — is
+a no-op rather than a second swap. That same property is why the DVD-time path
+had to be removed rather than kept as a fast path for small files: a partially
+converted header passes this test while its tables are still big-endian.
+
+`__DVDLongFileNameFlag` is now published by `pc_os.c`'s `OSInit`, as the real
+`OSInit` does unconditionally (OS.c:168). `dvdfs.c` enforces 8.3 filenames when
+it is zero, and Melee ships names that do not fit — `PlKbNrCpDk.dat` among
+them — so the SDK's own diagnostic panic was the stopping point the first time
+Kirby's copy-ability data was opened. Same class as the `__OSBusClock` fix: a
+console-init global nothing on the host was writing. Worth grepping for others.
+
+The movie's frame-size guard moved from `fn_8001E910` to the two
+`HSD_DevComRequest` calls that actually use the value. It read the next frame's
+size out of the front of the buffer just filled, and at the end of the movie —
+or once `lbMthp_8001F800` clears `unk_70` — there is no next frame, so the word
+is whatever the last frame left behind. The game never uses it in that case.
+Observed firing at `unk_70 = 0`, i.e. during shutdown, on a value that was
+about to be discarded. Validating at the point of use keeps the real
+protection: an oversized value there would overrun a frame buffer.
+
+## Tests
+
+`pc/tests/hsd_archive_test.c` — conversion happens exactly once and only when
+it should: header, tables and only relocation-named body words converted;
+`version[4]` and symbol strings left as bytes; a second call a no-op; a size
+matching neither byte order leaving the archive completely untouched; a short
+(partial) read refused rather than half-converted; and provenance recorded on
+the body, at the parsed address, and forgotten on re-read.
+
+```
+gcc -m32 -w -O0 -g -std=gnu17 -include tools/phase0/compat.h \
+    -I pc/src -I src -I extern/dolphin/include \
+    pc/tests/hsd_archive_test.c pc/src/pc_hsd_archive.c \
+    pc/src/pc_hsd_endian.c -Wl,--large-address-aware -o t.exe
+```
+
+Note for every test here: `-I extern/dolphin/include/libc` must be left out.
+Its `assert.h` shadows the host's and defines no `assert`.
+
+## Still not done — do not claim any of this
+
+- No VS match, gameplay, title visuals, audio or saves. Reaching
+  `gm_Scene_Vs_OnEnter` is a scene entry point, not a playable match.
+- Audio remains entirely unimplemented and is independent of this track:
+  `pc_ai` reports playback disabled and `pc_dsp` completes tasks immediately.
+  HPS stream metadata converts correctly, but nothing decodes or outputs.
+- Renderer still reports these during the opening scene, each skipping a draw:
+  depth comparison without a depth attachment, texture order or non-identity
+  texgen, more than four TEV stages, logic/subtract blending, and
+  palette/depth/copy texture formats.
+- The run is timing-dependent. Two runs from the same binary stopped in
+  different places, so a single clean run is not evidence a path is fixed.
+
+---
+
+# Earlier handoffs — history, not current status
+
 ## Latest verification: movie frame 1000; next blocker is title asset staging
 
 The longer run reached frame=1000, counter=2001, buffered=31, alarm.period=675000

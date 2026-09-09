@@ -21,11 +21,13 @@
  * arrive here as valid host pointers already.
  */
 #include "pc_sys.h"
+#include "pc_hsd_archive.h"
 #include "pc_hsd_endian.h"
 
 #include <stdlib.h>
 
 #include <dolphin/gx.h>
+#include <sysdolphin/baselib/archive.h>
 #include <sysdolphin/baselib/cobj.h>
 #include <sysdolphin/baselib/mobj.h>
 #include <sysdolphin/baselib/tobj.h>
@@ -322,4 +324,44 @@ HSD_MObj* __wrap_HSD_MObjLoadDesc(HSD_MObjDesc* desc)
         swap_tobj_desc(desc->texdesc);
     }
     return __real_HSD_MObjLoadDesc(desc);
+}
+
+/* --- whole archives ------------------------------------------------------
+ *
+ * The two places a .dat is complete, contiguous and at its final address.
+ * pc_hsd_archive.c explains why conversion has to happen here rather than
+ * inside the DVD read; both of these already take the archive base and its
+ * true size, which is exactly what the conversion needs and what a staged
+ * read cannot supply.
+ *
+ * A -1 is reported but not fatal here: both callees perform the same
+ * file_size comparison and raise the game's own byte-order diagnostic, which
+ * names the archive and both sizes. Aborting first would lose that.
+ */
+static void convert_archive(void* src, size_t file_size, const char* who)
+{
+    if (pc_hsd_archive_convert(src, file_size) == -1) {
+        pc_sys_log("pc_hsd_archive: ");
+        pc_sys_log(who);
+        pc_sys_log(": size matches neither byte order; left unconverted\n");
+    }
+}
+
+s32 __real_HSD_ArchiveParse(HSD_Archive* archive, u8* src, size_t file_size);
+s32 __wrap_HSD_ArchiveParse(HSD_Archive* archive, u8* src, size_t file_size)
+{
+    convert_archive(src, file_size, "HSD_ArchiveParse");
+    return __real_HSD_ArchiveParse(archive, src, file_size);
+}
+
+int __real_lbArchiveRelocate(HSD_Archive* archive, u8* src, size_t file_size,
+                             intptr_t base_addr);
+int __wrap_lbArchiveRelocate(HSD_Archive* archive, u8* src, size_t file_size,
+                             intptr_t base_addr)
+{
+    /* Reached with a memcpy'd copy of an archive that was already converted
+       and located once (ftdata.c relocates fighter animation data by a
+       delta). pc_hsd_archive_convert recognises that and does nothing. */
+    convert_archive(src, file_size, "lbArchiveRelocate");
+    return __real_lbArchiveRelocate(archive, src, file_size, base_addr);
 }
