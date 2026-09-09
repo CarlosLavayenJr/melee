@@ -49,6 +49,8 @@ static ARQCallback dma_callback;
 static int dma_depth;
 static int dma_pending;
 
+static void pc_ar_drain(void);
+
 u32 ARGetSize(void) { return PC_ARAM_SIZE; }
 
 /* The SDK reserves the low 16 KB for the DSP's own use. */
@@ -145,18 +147,50 @@ void ARStartDMA(u32 type, u32 mainmem_addr, u32 aram_addr, u32 length)
        timing: the frame tick drains completions once the stack is quiet. */
     dma_pending = 1;
     dma_depth--;
+    /* Draining right here, once dma_depth reaches 0, looked like the fix:
+       the outermost ARStartDMA call delivering what it just deferred instead
+       of waiting for the next frame tick. It reintroduces the exact hazard
+       the comment above already warns about, just one level further out.
+       __ARQPopTaskQueueHi calls ARStartDMA and only afterwards -- lines 26-28
+       in arq.c -- reads __ARQRequestQueueHi again to advance it. Draining
+       synchronously here calls back into the ARQ SDK while that bookkeeping
+       is still mid-flight, and a nested pop can advance the same queue out
+       from under the outer call, which then dereferences a stale pointer.
+       Confirmed by a real SIGSEGV in __ARQPopTaskQueueHi with this tried.
+       pc_watch_hit() is the actual safe point: see pc_watch.c. */
 }
 
-/* Called from the frame tick, standing in for the DMA completion interrupt.
-   Loops because each callback may queue another transfer, which completes
-   immediately and needs draining too. */
-void pc_ar_poll(void)
+/* Guards pc_ar_drain itself, not just ARStartDMA: dma_callback frequently
+   starts the next queued transfer, which is a fresh top-level ARStartDMA
+   call (dma_depth back at 0 by the time it runs) that would otherwise try
+   to drain again from inside this same drain, recursing for as long as the
+   queue keeps producing work. The while loop below already handles chained
+   completions by iterating; a nested call just needs to defer to it instead
+   of draining a second time. */
+static int draining;
+
+static void pc_ar_drain(void)
 {
     int guard = 0;
+    if (draining) {
+        return;
+    }
+    draining = 1;
     while (dma_pending && guard++ < 1024) {
         dma_pending = 0;
         if (dma_callback != NULL) {
             dma_callback(NULL);
         }
     }
+    draining = 0;
 }
+
+/* Called from the frame tick, and from every pc_watch_hit() site (pc_watch.c),
+   standing in for the DMA completion interrupt. The frame tick alone leaves a
+   caller that busy-waits on a transfer without ever yielding -- as
+   HSD_SynthSFXWaitForLoadCompletion does -- spinning forever, since nothing
+   reaches OSSleepThread/OSYieldThread to drive it. Every poll site is exactly
+   as safe a place to drain from: none of them run nested inside ARQ's own
+   bookkeeping, which is the one thing ARStartDMA itself cannot say (see the
+   comment on it above). */
+void pc_ar_poll(void) { pc_ar_drain(); }

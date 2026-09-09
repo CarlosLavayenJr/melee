@@ -3,6 +3,15 @@
 
 #include "pc_sys.h"
 
+/* Every registered site is a place the game polls some port stand-in while
+   waiting on it, which makes each one exactly as safe as the frame tick to
+   deliver a deferred ARAM DMA completion from: see the comment on pc_ar_poll()
+   in pc_ar.c for why ARStartDMA itself cannot do this, and why some poll site
+   has to. A caller that busy-waits without ever reaching OSSleepThread or
+   OSYieldThread -- so never reaching pc_vi_tick() either -- still reaches
+   here if it polls anything at all. */
+extern void pc_ar_poll(void);
+
 /* Calls at each site since the last disc read. */
 static unsigned long counts[PC_WATCH_SITES];
 static int reported;
@@ -61,6 +70,7 @@ void pc_watch_hit(int site)
         return;
     }
     counts[site]++;
+    pc_ar_poll();
     /* Report once per quiet stretch. The flag is set before anything is
        written, so logging from a counted site cannot recurse into here. */
     if (counts[site] < PC_WATCH_LIMIT || reported) {

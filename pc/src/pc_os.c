@@ -37,11 +37,59 @@ static int os_initialized = 0;
 u32 OSGetPhysicalMemSize(void)         { return GC_RAM_SIZE; }
 u32 OSGetConsoleSimulatedMemSize(void) { return GC_RAM_SIZE; }
 
+/* Deferred completions (pc_ar.c's ARAM DMA, so far) get delivered wherever
+   interrupts become enabled again -- real hardware would fire a pending one
+   at exactly this point. This is what actually reaches a caller that spins
+   without ever calling OSSleepThread or OSYieldThread: those two are what
+   the frame tick runs from, but OSDisableInterrupts/OSRestoreInterrupts
+   brackets nearly every critical section in the whole tree, so almost any
+   loop crosses one somewhere.
+   The state genuinely has to be tracked, not stubbed to "always enabled":
+   ARQPostRequest disables and restores around its own queue bookkeeping, and
+   its callers -- HSD_DevComARAMWakeUp among them -- already hold their own
+   outer disable across that whole call. Firing on every restore regardless
+   of nesting drains mid-bookkeeping inside the *outer* function too, one
+   level further out than the ARQ-internal case this design started from,
+   and corrupts it exactly the same way (confirmed: a real SIGSEGV in
+   HSD_DevComARAMWakeUp with that tried). Tracking the actual enabled/
+   disabled level and only firing on a genuine disabled->enabled transition
+   is what keeps the inner ARQPostRequest restore from firing early: it
+   restores to the level *it* observed on entry, which was already disabled,
+   so nothing transitions until the outer function's own restore does. */
+extern void pc_ar_poll(void);
+
+static BOOL interrupts_enabled = 1;
+
 /* The game only brackets critical sections with these and this build is
-   single-threaded, so there is nothing to disable. */
-BOOL OSDisableInterrupts(void)       { return 0; }
-BOOL OSEnableInterrupts(void)        { return 0; }
-BOOL OSRestoreInterrupts(BOOL level) { (void) level; return 0; }
+   single-threaded, so nothing else can run in between -- but a deferred
+   completion drains at exactly the disabled->enabled edge, matching what a
+   real pending interrupt would do. */
+BOOL OSDisableInterrupts(void)
+{
+    BOOL prev = interrupts_enabled;
+    interrupts_enabled = 0;
+    return prev;
+}
+
+BOOL OSEnableInterrupts(void)
+{
+    BOOL prev = interrupts_enabled;
+    interrupts_enabled = 1;
+    if (!prev) {
+        pc_ar_poll();
+    }
+    return prev;
+}
+
+BOOL OSRestoreInterrupts(BOOL level)
+{
+    BOOL prev = interrupts_enabled;
+    interrupts_enabled = level;
+    if (!prev && level) {
+        pc_ar_poll();
+    }
+    return prev;
+}
 
 void OSInit(void)
 {
