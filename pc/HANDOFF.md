@@ -1,30 +1,168 @@
 # Handoff — September 9, 2026 checkpoint
 
-## Current blocker: native movie decoding, after successful no-card progression
+## Current blocker: the movie decodes but never advances past frame 0
 
-Latest MTHP header/frame-size conversion now validates dimensions and buffer
-bounds, fixing the opening movie's failed allocation. Real MvOpen.mth header:
-version=2, 640x480, 30 fps, 3036 frames, buffer=0xeee0, first frame=0x1e00.
-The next run reached `__THPHuffDecodeDCTCompY` and crashed on an uninitialized
-Huffman lookup: THPDec.c's receive/IDCT kernels exist only inside MWCC assembly
-guards. The host now stops BEFORE decoding with an explicit `pc_mth: native THP
-Huffman/IDCT kernels not implemented` diagnostic. No opening-video pixels,
-gameplay, or title screen are claimed. Menu font rendering remains verified.
+`__OSBusClock` at 0x800000F8 is zero. Nothing in the host layer ever writes it
+(the console's bootrom does), so `OS_TIMER_CLOCK` — defined as
+`__OSBusClock / 4` — is zero too, and every `OSSecondsToTicks(x)` returns 0.
+`lbMthp_8001F410` arms the movie's frame-pacing alarm with
+`OSSetPeriodicAlarm(&alarm, OSSecondsToTicks(1.0f/60), OSSecondsToTicks(1.0f/60),
+fn_8001F2A4)`, so it arrives with `period == 0`. `pc_alarm_poll` treats a zero
+period as one-shot: it fires the handler once and calls `OSCancelAlarm`.
 
-Next substantial task: implement/test native C entropy and IDCT kernels (and
-audit THP structures/bitstream endianness), then GX YUV texture/material support.
-Do not bypass the opening scene or supply fake frames. Z8 depth textures used by
-HSD_EraseRect are now correctly diagnosed as unsupported before source reads;
-depth-texture operations are rejected by the material path.
+Verified in gdb at `lbmthp.c:637`: `__OSBusClock=0`, `alarm.period=0`,
+`alarm.fire=0`, `alarm.handler=(nil)`, `MoviePlayer.unk_80=1` (so the handler
+did run exactly once), `unk_78=0` (the frame index never advanced),
+`unk_108=31` — thirty-one frames are buffered and ready, so this is not a
+streaming or DVD problem. Dumping the decoded planes at the 91st call of
+`lbMthp_8001F67C` gives a plane byte-identical to the first: the decoder is
+re-decoding frame 0 forever.
 
-Run locally from PowerShell:
-`cd C:\Users\Owner\melee`, then `.\build\phase2\melee_host.exe`.
-Keep game.iso in that directory. J=A/confirm, K=B, Enter=Start, WASD=stick,
-arrows=D-pad, L=X, I=Y, U=Z, Space=L-trigger. Saves and audio playback remain
-unimplemented. Controlled PADStatus tests, not hardware keyboard automation,
-confirmed progression through no-card choices into opening scene initialization.
+Fix `__OSBusClock` (and `__OSCoreClock` beside it at 0xF8/0xFC) at host init —
+GameCube values are a 162 MHz bus and a 486 MHz core, giving the 40.5 MHz timer
+the whole OSTime layer already assumes. Audit what else silently divides by
+`OS_TIMER_CLOCK`: every `OSTicksToSeconds`/`OSMillisecondsToTicks` user has been
+running against zero, so other timing that looked "close enough" may also be
+wrong rather than merely coarse. Do NOT special-case a zero period inside
+`pc_alarm_poll` — that hides the real defect and leaves the rest of the timing
+layer broken.
+
+**A black screen is currently the correct output and not evidence of anything
+working.** Frame 0 of MvOpen.mth genuinely decodes to black, and nothing draws
+YUV to the framebuffer yet (see "still not done" below).
+
+## What is verified this session
+
+Native THP decoding, replacing kernels that existed only as MWCC assembly:
+
+- `pc/src/pc_thp_kernels.h` holds native C for the Huffman/receive entropy
+  decoder and the AAN inverse DCT. `extern/dolphin/src/dolphin/thp/THPDec.c`
+  calls them from `#else` branches of the same `#ifdef __MWERKS__` guards that
+  select the assembly, so the MWCC paths are byte-for-byte unchanged.
+- The IDCT is libjpeg-6b's `jidctflt.c`. That is not a design choice — reading
+  the paired-single kernel out shows identical AAN constants and an identical
+  `__THPAANScaleFactor` table. libjpeg's 1/8 is absent from the quantisation
+  table because the quantised store recovers it (GQR6 = 0x3D04, type u8, scale
+  −3), which is also where the level shift lands: the column pass adds 1024 and
+  1024/8 is JPEG's +128.
+- The IDCT writes GX_TF_I8 tile order directly (8x4 tiles; rows 8 bytes apart;
+  a 32-byte group every 8 columns). That is why `lbMthp_8001F67C` can hand the
+  plane straight to `GXInitTexObj` as `GX_TF_I8` — nothing re-tiles it.
+
+Three further defects were in the way, each of which alone produces a
+plausible-looking failure:
+
+- **Bitstream byte order.** The decoder caches a 32-bit *big-endian* word in
+  `info->currByte` and consumes it MSB first; every console refill is a `lwz`,
+  and `__THPPrepBitStream`'s plain `info->currByte = *ptr` compiled to a
+  host-order load. A correct Huffman decoder alone would still have decoded
+  every code from reversed bytes. Audited the rest of the THP path: markers,
+  quantisation tables and Huffman bit counts are all read a byte at a time and
+  were already correct either way, so this word cache was the only exposure.
+- **Adjacent globals.** `THPInit` writes `__THPLC` and `__THPLCWork672` through
+  one `struct THPInitWork`, which works only because the console linker placed
+  them next to each other — `work672` lands past the end of `__THPLC`. A native
+  linker orders independent globals freely, so that store went somewhere else
+  and `__THPLCWork672`, the base every decoded MCU row is written through,
+  stayed null. Now declared as one object, the same fix `card_host_storage.h`
+  makes for the memory-card context. The locked cache itself became ordinary
+  memory rather than the hardcoded 0xE0000000.
+- **`LCStoreData` was a no-op**, on the grounds that x86 caches are coherent.
+  It is a DMA, not cache maintenance: `__THPDecompressiMCURow*` decodes a whole
+  MCU row into locked-cache scratch and stores it into the frame plane, so the
+  stub discarded every decoded pixel. It and the other LC transfers now copy.
+
+Against the real `MvOpen.mth`, with no controlled input: the decoder runs to
+completion, `__THPBitStreamFailed` never fires, and execution reaches
+`GXInitTexObj`. Frame 0 decodes to Y=16, U=V=128 — black — with a Y=0 border
+whose edges fall on rows 19 and 462. Those rows are **not** tile-aligned, so
+those pixels came from decoded coefficients rather than unwritten memory. That
+is the strongest evidence available that the decode is real, and it is not the
+same thing as having seen a correct picture: no frame with actual content has
+been decoded yet, because of the pacing blocker above.
+
+Material and texture descriptor byte order (`pc_hsd_swap.c`):
+
+- `DObjLoad` panicked at `dobj.c:312` on `rendermode & 0x60000000` hitting
+  `default` with 0x31001060, which byte-swaps to a valid 0x60100031. New
+  schemas convert `HSD_MObjDesc`, `HSD_Material`, `HSD_TObjDesc`,
+  `HSD_ImageDesc`, `HSD_TlutDesc`, `HSD_TexLODDesc` and `HSD_TObjTevDesc`,
+  wrapped at `HSD_MObjLoadDesc` and `HSD_TObjLoadDesc` (both, because texture
+  animation reaches the latter without a material; `pc_hsd_claim` makes
+  whichever runs second a no-op).
+- Byte fields are deliberately untouched: `HSD_PEDesc`, the repeat flags, every
+  `GXColor`, and all of `HSD_TObjTevDesc` except `active` have no byte order to
+  get wrong. Pointer fields were already converted by `pc_dvd.c`'s relocation
+  pass.
+- The panic is gone and the opening scene now runs continuously for at least 90
+  seconds without halting.
+
+## Tests
+
+- `pc/tests/thp_kernel_test.c` — standalone, 32-bit, known answers throughout:
+  big-endian word loads, MSB-first receive across word boundaries, sign
+  extension against JPEG Table F.2, codes of 1..7 bits through both the quick
+  table and the canonical fallback, a code starting at every bit offset from 26
+  to 32 so each word-boundary branch of the console decoder is covered, an
+  unmatchable code reported rather than guessed, zig-zag placement and DC
+  prediction, GX I8 tile addressing, and the IDCT against a double-precision
+  textbook transform (exact — worst deviation 0 counts over 64 random blocks).
+  It found a real bug: the canonical search terminated on the `maxCode[17]`
+  sentinel and then indexed `Vij` with a 17-bit code.
+
+  ```
+  gcc -m32 -std=c11 -Wall -Wextra -Werror -O2 -I pc/src \
+      -include tools/phase0/compat.h pc/tests/thp_kernel_test.c -o t.exe
+  ```
+
+- `pc/tests/hsd_endian_test.c` — extended with the material graph, including
+  the real 0x31001060 rendermode, and asserting that byte and pointer fields
+  come through untouched. Note the include list: `-I extern/dolphin/include/libc`
+  must be **left out**, because its `assert.h` shadows the host's and defines no
+  `assert`.
+
+  ```
+  gcc -m32 -w -O0 -g -fgnu89-inline -std=gnu17 \
+      -Wno-error=implicit-function-declaration \
+      -Wno-error=incompatible-pointer-types -include tools/phase0/compat.h \
+      -I src -I extern/dolphin/include -I extern/dolphin/src -I pc/src \
+      -DVERSION_GALE01 -DBUILD_VERSION=0 -DPC_GX_RENDERER \
+      pc/tests/hsd_endian_test.c pc/src/pc_hsd_endian.c pc/src/pc_hsd_swap.c \
+      -Wl,--large-address-aware -o t.exe
+  ```
+
+- `pc/tests/thp_plane_dump.py` — untiles a plane dumped from a running process
+  and reports its histogram, row means and optionally a PPM. Diagnostic only.
+  Dump with gdb into `build/` (gitignored); never commit a decoded frame.
+
+## Still not done — do not claim any of this
+
+- **No movie pixels reach the screen.** `lbMthp_8001F67C` binds three
+  `GX_TF_I8` texobjs — Y at full resolution on TEXMAP0, U and V at half on
+  TEXMAP1/TEXMAP2 — and the renderer has no YUV→RGB path across three texmaps.
+  This is the third task from the original brief and is still entirely ahead.
+- No frame with real picture content has been decoded, so the decoder is
+  verified against synthetic known answers and against frame 0's structure,
+  **not** against a photograph. Re-dump a mid-movie frame once pacing works and
+  check it is not flat before trusting it.
+- The renderer still reports these unsupported cases during the opening scene,
+  each of which skips a draw: face culling, RGB565/RGBA4/RGBA6 vertex colour
+  formats, TEV PREV/REG1/REG2/konst inputs, multiple TEV stages, logic/subtract
+  blending, and palette/depth/copy texture formats.
+- `pc_dvd: truncated HSD archive body` still appears three times during the
+  opening scene. Unaudited.
+- No audio, no saves, no gameplay, no title screen.
+
+## Recent additions
+
+The window title now carries the presented frame rate, counted from real
+`vkQueuePresentKHR` calls rather than the game's internal frame counter.
+`tools/phase0/linkcheck.sh` and `survey.sh` gained `-I pc/src` so they still
+compile `THPDec.c`.
 
 ---
+
+# Earlier handoffs — history, not current status
 
 ## Latest: HPS stream metadata fixed; opening movie header is next
 

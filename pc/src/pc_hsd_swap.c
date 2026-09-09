@@ -23,8 +23,12 @@
 #include "pc_sys.h"
 #include "pc_hsd_endian.h"
 
+#include <stdlib.h>
+
 #include <dolphin/gx.h>
 #include <sysdolphin/baselib/cobj.h>
+#include <sysdolphin/baselib/mobj.h>
+#include <sysdolphin/baselib/tobj.h>
 #include <sysdolphin/baselib/pobj.h>
 #include <sysdolphin/baselib/jobj.h>
 #include <sysdolphin/baselib/wobj.h>
@@ -197,4 +201,125 @@ void __wrap_HSD_WObjInit(HSD_WObj* wobj, HSD_WObjDesc* desc)
 {
     if (desc && pc_hsd_claim(desc, sizeof *desc, PC_HSD_WOBJ)) swap_vec(&desc->pos);
     __real_HSD_WObjInit(wobj, desc);
+}
+
+/* --- materials and textures ---------------------------------------------
+ *
+ * Found the same way as the schemas above: DObjLoad's switch on
+ * `mobj->rendermode & 0x60000000` hit `default` and panicked (dobj.c:312)
+ * with rendermode 0x31001060, whose byte-swapped form 0x60100031 selects a
+ * real case. Everything reachable from HSD_MObjDesc is converted here in one
+ * pass rather than one field at a time, because the material graph is loaded
+ * as a unit and a half-converted one is harder to diagnose than an
+ * unconverted one.
+ *
+ * Byte fields -- HSD_PEDesc, the repeat flags, every GXColor, the whole of
+ * HSD_TObjTevDesc except `active` -- are deliberately absent: they have no
+ * byte order to get wrong. So are pointer fields, which pc_dvd.c's archive
+ * relocation pass already converted.
+ */
+static void swap_image_desc(struct HSD_ImageDesc* img)
+{
+    if (!img || !pc_hsd_claim(img, sizeof *img, PC_HSD_IMAGE)) return;
+    img->width = swap16(img->width);
+    img->height = swap16(img->height);
+    img->format = (GXTexFmt) swap32((unsigned) img->format);
+    img->mipmap = swap32(img->mipmap);
+    swap_f32(&img->minLOD);
+    swap_f32(&img->maxLOD);
+}
+
+static void swap_tlut_desc(HSD_TlutDesc* t)
+{
+    if (!t || !pc_hsd_claim(t, sizeof *t, PC_HSD_TLUT)) return;
+    t->fmt = (GXTlutFmt) swap32((unsigned) t->fmt);
+    t->tlut_name = swap32(t->tlut_name);
+    t->n_entries = swap16(t->n_entries);
+}
+
+static void swap_lod_desc(HSD_TexLODDesc* l)
+{
+    if (!l || !pc_hsd_claim(l, sizeof *l, PC_HSD_LOD)) return;
+    l->minFilt = (GXTexFilter) swap32((unsigned) l->minFilt);
+    swap_f32(&l->LODBias);
+    l->max_anisotropy = (GXAnisotropy) swap32((unsigned) l->max_anisotropy);
+}
+
+static void swap_tobj_tev_desc(HSD_TObjTevDesc* t)
+{
+    if (!t || !pc_hsd_claim(t, sizeof *t, PC_HSD_TEV)) return;
+    t->active = swap32(t->active);
+}
+
+static void swap_tobj_desc(HSD_TObjDesc* t)
+{
+    for (; t && pc_hsd_claim(t, sizeof *t, PC_HSD_TOBJ); t = t->next) {
+        t->id = (GXTexMapID) swap32((unsigned) t->id);
+        t->src = (GXTexGenSrc) swap32((unsigned) t->src);
+        swap_vec(&t->rotate);
+        swap_vec(&t->scale);
+        swap_vec(&t->translate);
+        t->wrap_s = (GXTexWrapMode) swap32((unsigned) t->wrap_s);
+        t->wrap_t = (GXTexWrapMode) swap32((unsigned) t->wrap_t);
+        t->blend_flags = swap32(t->blend_flags);
+        swap_f32(&t->blending);
+        t->magFilt = (GXTexFilter) swap32((unsigned) t->magFilt);
+
+        /* The texmap a converted descriptor names has to be one that exists.
+           Anything else means this was not a big-endian descriptor and the
+           conversion has just corrupted it -- say so rather than draw with
+           it. */
+        if ((unsigned) t->id > GX_TEXMAP7 && t->id != GX_TEXMAP_NULL &&
+            t->id != GX_TEX_DISABLE) {
+            pc_sys_log("pc_hsd_swap: tobj descriptor names no valid texmap\n");
+            abort();
+        }
+
+        swap_image_desc(t->imagedesc);
+        swap_tlut_desc(t->tlutdesc);
+        swap_lod_desc(t->lod);
+        swap_tobj_tev_desc(t->tev);
+    }
+}
+
+HSD_TObj* __real_HSD_TObjLoadDesc(HSD_TObjDesc* td);
+HSD_TObj* __wrap_HSD_TObjLoadDesc(HSD_TObjDesc* td)
+{
+    /* Wrapped separately from the mobj below because texture animation
+       reaches HSD_TObjLoadDesc without going through a material. Whichever
+       arrives first converts; pc_hsd_claim makes the other a no-op. */
+    swap_tobj_desc(td);
+    return __real_HSD_TObjLoadDesc(td);
+}
+
+HSD_MObj* __real_HSD_MObjLoadDesc(HSD_MObjDesc* desc);
+HSD_MObj* __wrap_HSD_MObjLoadDesc(HSD_MObjDesc* desc)
+{
+    if (desc && pc_hsd_claim(desc, sizeof *desc, PC_HSD_MOBJ)) {
+        desc->rendermode = swap32(desc->rendermode);
+        /* DObjLoad switches on exactly these three; a fourth value is what
+           the unconverted descriptor produced, so a fourth value here means
+           the conversion did not fix it. */
+        switch (desc->rendermode & 0x60000000) {
+        case 0:
+        case 0x40000000:
+        case 0x60000000:
+            break;
+        default:
+            pc_sys_log("pc_hsd_swap: mobj rendermode invalid after "
+                       "conversion\n");
+            abort();
+        }
+    }
+    if (desc && desc->mat && pc_hsd_claim(desc->mat, sizeof(HSD_Material),
+                                          PC_HSD_MATERIAL)) {
+        /* ambient/diffuse/specular are GXColor -- four bytes each, no order
+           to fix. Only the two floats need it. */
+        swap_f32(&desc->mat->alpha);
+        swap_f32(&desc->mat->shininess);
+    }
+    if (desc) {
+        swap_tobj_desc(desc->texdesc);
+    }
+    return __real_HSD_MObjLoadDesc(desc);
 }
