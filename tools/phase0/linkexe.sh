@@ -23,13 +23,22 @@ set -uo pipefail
 # name, the offset within it and the length, and whether a byte-order schema
 # claimed it. Writing a schema per format means knowing which files the boot
 # actually touches and in what order; this is how that list is obtained.
+#
+# --renderer links pc/src/pc_vulkan.c and pc/src/pc_gx_render.c over the same
+# curated set of GX entry points --trace-gx used to find, in place of the
+# recorder: a real Win32 window and Vulkan swapchain instead of a log line.
+# See pc/GX_RENDERER.md. Mutually exclusive with --trace-gx -- both wrap the
+# same symbols, so only one wrapper set can own them -- and Windows-only for
+# now, since it links against vulkan-1/gdi32/user32 directly.
 TRACE_GX=0
 TRACE_DVD=0
+RENDERER=0
 ARGS=""
 for a in "$@"; do
   case "$a" in
     --trace-gx) TRACE_GX=1 ;;
     --trace-dvd) TRACE_DVD=1 ;;
+    --renderer) RENDERER=1 ;;
     *) ARGS="$ARGS $a" ;;
   esac
 done
@@ -172,12 +181,24 @@ for d in $(find extern/dolphin/src -type d); do INCLUDES="$INCLUDES -I $d"; done
 # varargs intrinsics (__builtin_va_info), which have no host counterpart.
 # pc/src/pc_printf.c replaces it.
 WRAPPED="GXBegin GXCallDisplayList GXLoadTexObj GXSetTevOrder GXSetProjection GXLoadPosMtxImm GXCopyDisp"
-if [ "$TRACE_GX" = 1 ]; then
+# pc_gx_trace.c implements only the list above. pc_gx_render.c implements
+# that same list plus these -- init and the clear color have no trace-mode
+# equivalent, since a recorder has no swapchain to clear.
+RENDERER_ONLY="GXInit GXSetCopyClear"
+if [ "$TRACE_GX" = 1 ] || [ "$RENDERER" = 1 ]; then
   for w in $WRAPPED; do LDFLAGS="$LDFLAGS -Wl,--wrap=$w"; done
-else
+fi
+if [ "$RENDERER" = 1 ]; then
+  for w in $RENDERER_ONLY; do LDFLAGS="$LDFLAGS -Wl,--wrap=$w"; done
+  EXCLUDE_TRACE='pc/src/pc_gx_trace\.c|'
+  LDFLAGS="$LDFLAGS -lvulkan-1 -lgdi32 -luser32"
+elif [ "$TRACE_GX" != 1 ]; then
   # Without the flags the wrappers are dead weight and their __real_ references
   # would not resolve, so the recorder is left out of the build entirely.
   EXCLUDE_TRACE='pc/src/pc_gx_trace\.c|'
+fi
+if [ "$RENDERER" != 1 ]; then
+  EXCLUDE_TRACE="${EXCLUDE_TRACE:-}"'pc/src/pc_vulkan\.c|pc/src/pc_gx_render\.c|'
 fi
 
 EXCLUDE="${EXCLUDE_TRACE:-}${EXCLUDE_HOSTLIBC:-}"'dolphin/stub\.c|amcstubs|odemustubs|MetroTRK|dolphin/os/OS(Interrupt|Alarm|Time|Cache|Context|Reset|ResetSW|Thread)?\.c|MSL/printf\.c|dolphin/pad/pad\.c|dolphin/ar/ar\.c|dolphin/dsp/dsp(_task)?\.c|dolphin/dvd/dvdlow\.c'
