@@ -49,6 +49,56 @@
    rather than naming it; give it a name here. */
 typedef void (*DVDLowCallback)(unsigned long);
 
+/* Every DVDLow* entry point below used to call its completion back inline,
+   before returning -- reads are synchronous here, so nothing seemed lost by
+   skipping the wait real hardware would need. It cost correctness instead:
+   callers write `DVDReadAsyncPrio(...); busy = 1;`, relying on the real
+   ordering where the transfer -- and its completion callback -- genuinely
+   happens later, after that assignment. Here the whole transfer, including
+   arbitrarily deep synchronous re-entry (the completion starting another
+   read, which completes and starts another, ...), finishes inside the
+   DVDReadAsyncPrio call itself, so `busy = 1` runs *last* and stomps a
+   completion the callback already correctly cleared to 0 minutes -- well,
+   instructions -- earlier. HSD_DevComDVDWakeUp's type-0x21 path hits exactly
+   this: confirmed by tracing HSD_DevCom_804D77F5 with a hardware watchpoint,
+   which is how this got found at all.
+   The fix mirrors pc_ar.c's ARAM completions: do the actual work (the read,
+   the byte-order pass) synchronously, since that part is genuinely safe, but
+   defer *invoking the callback* to the same interrupt-enable edge pc_ar_poll
+   uses. Only one DVD command is ever outstanding at a time -- it is a single
+   serial device on real hardware too -- so one pending slot is enough. */
+static DVDLowCallback dvd_pending_cb;
+static unsigned long dvd_pending_arg;
+static int dvd_pending;
+static int dvd_draining;
+
+static void pc_dvd_defer(DVDLowCallback callback, unsigned long arg)
+{
+    if (callback == NULL) {
+        return;
+    }
+    dvd_pending_cb = callback;
+    dvd_pending_arg = arg;
+    dvd_pending = 1;
+}
+
+/* Called from the same interrupt-enable edge as pc_ar_poll(); see pc_os.c. */
+void pc_dvd_poll(void)
+{
+    if (dvd_draining) {
+        return;
+    }
+    dvd_draining = 1;
+    while (dvd_pending) {
+        DVDLowCallback cb = dvd_pending_cb;
+        unsigned long arg = dvd_pending_arg;
+        dvd_pending = 0;
+        dvd_pending_cb = NULL;
+        cb(arg);
+    }
+    dvd_draining = 0;
+}
+
 #define GC_RAM_CACHED 0x80000000UL
 
 /* Where the FST is published. Sits above OSBootInfo and below the arena, which
@@ -449,7 +499,7 @@ int DVDLowRead(void* addr, u32 length, u32 offset, DVDLowCallback callback)
 
     if (disc_fd < 0) {
         if (callback != NULL) {
-            callback(DVD_INTTYPE_DE); /* drive error: nothing to read from */
+            pc_dvd_defer(callback, DVD_INTTYPE_DE); /* drive error: nothing to read from */
         }
         return 0;
     }
@@ -457,7 +507,7 @@ int DVDLowRead(void* addr, u32 length, u32 offset, DVDLowCallback callback)
     got = pc_sys_pread(disc_fd, addr, length, offset);
     if (got != (long) length) {
         if (callback != NULL) {
-            callback(DVD_INTTYPE_DE);
+            pc_dvd_defer(callback, DVD_INTTYPE_DE);
         }
         return 0;
     }
@@ -483,7 +533,7 @@ int DVDLowRead(void* addr, u32 length, u32 offset, DVDLowCallback callback)
        above are written to tolerate it, since the SDK's own fast path can
        complete a cached read the same way. */
     if (callback != NULL) {
-        callback(DVD_INTTYPE_TC);
+        pc_dvd_defer(callback, DVD_INTTYPE_TC);
     }
     return 1;
 }
@@ -492,7 +542,7 @@ int DVDLowSeek(u32 offset, DVDLowCallback callback)
 {
     (void) offset; /* positional reads make seeking meaningless */
     if (callback != NULL) {
-        callback(DVD_INTTYPE_TC);
+        pc_dvd_defer(callback, DVD_INTTYPE_TC);
     }
     return 1;
 }
@@ -505,9 +555,7 @@ int DVDLowReadDiskID(DVDDiskID* diskID, DVDLowCallback callback)
     if (disc_fd >= 0) {
         got = pc_sys_pread(disc_fd, dst, 0x20, 0);
     }
-    if (callback != NULL) {
-        callback(got == 0x20 ? DVD_INTTYPE_TC : DVD_INTTYPE_DE);
-    }
+    pc_dvd_defer(callback, got == 0x20 ? DVD_INTTYPE_TC : DVD_INTTYPE_DE);
     return got == 0x20;
 }
 
@@ -515,7 +563,7 @@ int DVDLowReadDiskID(DVDDiskID* diskID, DVDLowCallback callback)
 int DVDLowWaitCoverClose(DVDLowCallback callback)
 {
     if (callback != NULL) {
-        callback(DVD_INTTYPE_CVR);
+        pc_dvd_defer(callback, DVD_INTTYPE_CVR);
     }
     return 1;
 }
@@ -525,7 +573,7 @@ u32 DVDLowGetCoverStatus(void) { return 2; /* closed */ }
 int DVDLowStopMotor(DVDLowCallback callback)
 {
     if (callback != NULL) {
-        callback(DVD_INTTYPE_TC);
+        pc_dvd_defer(callback, DVD_INTTYPE_TC);
     }
     return 1;
 }
@@ -533,7 +581,7 @@ int DVDLowStopMotor(DVDLowCallback callback)
 int DVDLowRequestError(DVDLowCallback callback)
 {
     if (callback != NULL) {
-        callback(DVD_INTTYPE_TC);
+        pc_dvd_defer(callback, DVD_INTTYPE_TC);
     }
     return 1;
 }
@@ -542,7 +590,7 @@ int DVDLowInquiry(DVDDriveInfo* info, DVDLowCallback callback)
 {
     (void) info;
     if (callback != NULL) {
-        callback(DVD_INTTYPE_TC);
+        pc_dvd_defer(callback, DVD_INTTYPE_TC);
     }
     return 1;
 }
@@ -553,7 +601,7 @@ int DVDLowAudioStream(u32 subcmd, u32 length, u32 offset,
 {
     (void) subcmd; (void) length; (void) offset;
     if (callback != NULL) {
-        callback(DVD_INTTYPE_TC);
+        pc_dvd_defer(callback, DVD_INTTYPE_TC);
     }
     return 1;
 }
@@ -562,7 +610,7 @@ int DVDLowRequestAudioStatus(u32 subcmd, DVDLowCallback callback)
 {
     (void) subcmd;
     if (callback != NULL) {
-        callback(DVD_INTTYPE_TC);
+        pc_dvd_defer(callback, DVD_INTTYPE_TC);
     }
     return 1;
 }
@@ -571,7 +619,7 @@ int DVDLowAudioBufferConfig(int enable, u32 size, DVDLowCallback callback)
 {
     (void) enable; (void) size;
     if (callback != NULL) {
-        callback(DVD_INTTYPE_TC);
+        pc_dvd_defer(callback, DVD_INTTYPE_TC);
     }
     return 1;
 }

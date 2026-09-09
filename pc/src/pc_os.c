@@ -55,8 +55,17 @@ u32 OSGetConsoleSimulatedMemSize(void) { return GC_RAM_SIZE; }
    disabled level and only firing on a genuine disabled->enabled transition
    is what keeps the inner ARQPostRequest restore from firing early: it
    restores to the level *it* observed on entry, which was already disabled,
-   so nothing transitions until the outer function's own restore does. */
+   so nothing transitions until the outer function's own restore does.
+   pc_dvd.c's DVD reads defer their completion callbacks the same way and for
+   the same reason: DVDReadAsyncPrio callers write `DVDReadAsyncPrio(...);
+   busy = 1;`, trusting that the transfer -- and its callback -- genuinely
+   happens later. Here it happens synchronously inside the call, so that
+   `busy = 1` runs *after* the callback already correctly reset it, stomping
+   it back to a stale "busy" nothing ever clears (confirmed: a hardware
+   watchpoint on HSD_DevCom_804D77F5 caught exactly this in
+   HSD_DevComDVDWakeUp). */
 extern void pc_ar_poll(void);
+extern void pc_dvd_poll(void);
 
 static BOOL interrupts_enabled = 1;
 
@@ -77,6 +86,7 @@ BOOL OSEnableInterrupts(void)
     interrupts_enabled = 1;
     if (!prev) {
         pc_ar_poll();
+        pc_dvd_poll();
     }
     return prev;
 }
@@ -87,6 +97,7 @@ BOOL OSRestoreInterrupts(BOOL level)
     interrupts_enabled = level;
     if (!prev && level) {
         pc_ar_poll();
+        pc_dvd_poll();
     }
     return prev;
 }
