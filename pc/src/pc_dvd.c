@@ -354,6 +354,47 @@ static char sfx_name[64];
 static unsigned int sfx_groups;
 static pc_u32 sfx_prefix[4];
 
+/* An AX effects file (.sem) opens with five (count, count words) sections
+   back to back -- AXDriver_8038DA70 (axdriver.c) walks exactly this shape,
+   reading each count, then striding count * 4 bytes to the next one. Some of
+   those word arrays are offsets the same function relocates in place
+   afterward (+= the buffer's own base address); others are left alone. That
+   distinction does not matter here -- every word in the walk, relocated or
+   not, is a plain 32-bit value read off a big-endian disc, so all of them
+   need the same swap. What is beyond the fifth array is not: the function
+   never reads past it, so its shape is unknown, and this stops there rather
+   than guess.
+   The whole file arrives as one read (unlike the sample map's separate
+   header and table requests), so this runs once, in the same pass, at
+   rel == 0. */
+#define SEM_HEADER_SECTIONS 5
+
+static unsigned int swap_sem_header(unsigned char* addr, unsigned int length)
+{
+    unsigned int pos = 0;
+    unsigned int section;
+
+    for (section = 0; section < SEM_HEADER_SECTIONS; section++) {
+        pc_u32 count;
+
+        if (pos + 4 > length) {
+            break;
+        }
+        count = be32(addr + pos);
+        *(pc_u32*) (addr + pos) = count;
+        pos += 4;
+
+        /* Divide rather than multiply: a count straight off the disc can
+           pick a value whose product with the word size wraps. */
+        if (count > (length - pos) / 4) {
+            break;
+        }
+        swap_words(addr + pos, count);
+        pos += count * 4;
+    }
+    return pos;
+}
+
 /* Returns 1 when a schema claimed the read, 0 when the format is still
    unconverted. */
 static int swap_contents(const char* name, unsigned int rel,
@@ -388,6 +429,13 @@ static int swap_contents(const char* name, unsigned int rel,
             return 1;
         }
         /* The samples. ADPCM bytes -- nothing to swap. */
+        return 0;
+    }
+    if (name_ends_with(name, ".sem")) {
+        if (rel == 0) {
+            swap_sem_header(addr, length);
+            return 1;
+        }
         return 0;
     }
     return 0;

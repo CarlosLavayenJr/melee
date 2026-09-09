@@ -21,7 +21,20 @@
 
 static OSContext* current_context;
 
-OSContext* OSGetCurrentContext(void) { return current_context; }
+/* On hardware a current context always exists, set up before any game code
+   runs. Here OSSetCurrentContext isn't called until the first VI retrace
+   handler exits, and db_ClearFPUExceptions (dberror.c) reads and dereferences
+   the current context during early boot, well before that first retrace --
+   confirmed as a real NULL dereference there. Since OSSaveFPUContext and
+   OSLoadFPUContext already ignore whatever context they are handed, a static
+   fallback costs nothing and keeps the "always valid" invariant real
+   hardware provides. */
+static OSContext fallback_context;
+
+OSContext* OSGetCurrentContext(void)
+{
+    return current_context != NULL ? current_context : &fallback_context;
+}
 
 void OSSetCurrentContext(OSContext* context) { current_context = context; }
 
