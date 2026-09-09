@@ -1,5 +1,38 @@
 # Handoff — September 9, 2026 checkpoint
 
+## Latest verification: movie frame 1000; next blocker is title asset staging
+
+The longer run reached frame=1000, counter=2001, buffered=31, alarm.period=675000
+without a crash/assert. This is ~33 seconds of source movie content, not full
+intro completion. PADStatus was held neutral by GDB after MoviePlayer.power
+became nonzero to prevent test-time button presses from skipping the movie.
+The normal executable retains its keyboard input; there is no scene bypass.
+
+Clean renderer rebuild linked successfully: 1141 objects, 34 existing placeholder
+symbols, 92MB EXE. Renderer CPU/GPU, texture CPU/GPU, THP kernel and HSD descriptor
+tests all pass. The unresolved placeholders are still a port-completeness limit,
+not game-code recompilation or evidence of a finished executable.
+
+Skipping normally with confirm input enters gm_Scene_Title_OnEnter and aborts:
+`pc_hsd_archive_body(data=HSD_DevCom_804C6330_bufs+32, size=6960)`.
+Call chain: gm_PreloadTitleDemo -> lbDvd_80018254 -> DVD completion ->
+DVDLowRead -> swap_contents("PlKbAJ.dat", rel=0, length=16384) ->
+swap_hsd_archive -> pc_hsd_archive_body. The two 16KB relay buffers are native
+static storage outside 0x80000000..0x81800000, not malformed archive pointers.
+
+Do NOT merely expand the provenance bounds or drop the assertion. devcom.c
+stages DVD chunks through these buffers into ARAM, then copies them to final
+memory. The current DVD-read-time archive conversion assumes a whole archive
+in its final RAM location: it both converts too early and loses provenance
+across transfers; larger split archives also leave tables unswapped. Audit
+moving archive conversion to HSD_ArchiveParse / lbArchiveRelocate consumption
+or explicitly tracking byte-order/provenance across staged transfers. Preserve
+header-only consumers and ensure relocation words are converted exactly once.
+This title-path fix is not implemented. Full opening completion, title visuals,
+gameplay, sound and saves are still unverified/unimplemented as noted below.
+
+---
+
 ## Latest renderer milestone: real opening-movie frame in Vulkan
 
 The game-issued movie quad now renders its three decoded I8 planes through the
