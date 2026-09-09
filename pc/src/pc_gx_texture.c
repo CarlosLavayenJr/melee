@@ -31,6 +31,13 @@ static VkCommandPool upload_pool;
 
 static void report(const char* reason)
 {
+    /* Distinct diagnostics once each; a missing font can hit this thousands
+       of times a second while the menu continues to run. */
+    static const char* seen[64];
+    static unsigned count;
+    unsigned i;
+    for (i = 0; i < count; ++i) if (!strcmp(seen[i], reason)) return;
+    if (count < 64) seen[count++] = reason;
     pc_sys_log("pc_gx_texture: "); pc_sys_log(reason); pc_sys_log("\n");
 }
 

@@ -191,7 +191,9 @@ for d in $(find extern/dolphin/src -type d); do INCLUDES="$INCLUDES -I $d"; done
 # pad-queue wait loop -- which polls this entry point directly and never
 # sleeps or yields -- doesn't spin forever waiting on an alarm nothing else
 # would ever deliver.
-LDFLAGS="$LDFLAGS -Wl,--wrap=HSD_CObjInit -Wl,--wrap=HSD_CObjLoadDesc -Wl,--wrap=HSD_PadGetRawQueueCount"
+LDFLAGS="$LDFLAGS -Wl,--wrap=HSD_CObjInit -Wl,--wrap=HSD_CObjLoadDesc -Wl,--wrap=HSD_PadGetRawQueueCount -Wl,--wrap=HSD_PObjLoadDesc"
+LDFLAGS="$LDFLAGS -Wl,--wrap=GXSetDrawDone -Wl,--wrap=GXDrawDone"
+LDFLAGS="$LDFLAGS -Wl,--wrap=HSD_JObjLoadJoint"
 
 WRAPPED="GXBegin GXCallDisplayList GXLoadTexObj GXSetTevOrder GXSetProjection GXLoadPosMtxImm GXCopyDisp"
 # pc_gx_trace.c implements only the list above. pc_gx_render.c implements

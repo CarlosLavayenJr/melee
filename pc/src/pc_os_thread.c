@@ -64,6 +64,7 @@ extern void pc_ar_poll(void);
    pc_ar_poll -- these arrive on the decrementer interrupt on hardware, and
    nothing here raises interrupts. */
 extern void pc_alarm_poll(void);
+extern void pc_gx_finish_poll(void);
 
 /* Advance one video frame by invoking the handler the game registered. */
 static void pc_vi_tick(void)
@@ -74,6 +75,7 @@ static void pc_vi_tick(void)
     }
     pc_ar_poll();
     pc_alarm_poll();
+    pc_gx_finish_poll();
 }
 
 void OSSleepThread(OSThreadQueue* queue)

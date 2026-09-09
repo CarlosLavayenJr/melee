@@ -40,6 +40,7 @@
  * per format. That work starts where this file ends.
  */
 #include "pc_sys.h"
+#include "pc_hsd_endian.h"
 
 #include <dolphin/dvd.h>
 #include <dolphin/os.h>
@@ -436,6 +437,10 @@ static void swap_hsd_archive(unsigned char* addr, unsigned int length)
        host order, so reading them as if they were still big-endian would
        swap them a second time. */
     data_size = ((const pc_u32*) addr)[1];
+    if (data_size > length - 0x20) {
+        pc_sys_log("pc_dvd: truncated HSD archive body\n");
+        return;
+    }
     nb_reloc = ((const pc_u32*) addr)[2];
     nb_public = ((const pc_u32*) addr)[3];
     nb_extern = ((const pc_u32*) addr)[4];
@@ -480,6 +485,7 @@ static void swap_hsd_archive(unsigned char* addr, unsigned int length)
     /* Whatever remains -- the symbol table -- is a run of NUL-terminated
        names referenced by the offsets just swapped above. Bytes; left as
        they are, same as the sample map's own string data. */
+    pc_hsd_archive_body(body, data_size);
 }
 
 /* Returns 1 when a schema claimed the read, 0 when the format is still
@@ -651,6 +657,7 @@ int DVDLowRead(void* addr, u32 length, u32 offset, DVDLowCallback callback)
     }
 
     got = pc_sys_pread(disc_fd, addr, length, offset);
+    if (got > 0) pc_hsd_forget_range(addr, (size_t)got);
     if (got != (long) length) {
         if (callback != NULL) {
             pc_dvd_defer(callback, DVD_INTTYPE_DE);

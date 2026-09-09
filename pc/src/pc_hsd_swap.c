@@ -21,9 +21,12 @@
  * arrive here as valid host pointers already.
  */
 #include "pc_sys.h"
+#include "pc_hsd_endian.h"
 
 #include <dolphin/gx.h>
 #include <sysdolphin/baselib/cobj.h>
+#include <sysdolphin/baselib/pobj.h>
+#include <sysdolphin/baselib/jobj.h>
 
 static unsigned short swap16(unsigned short v)
 {
@@ -120,4 +123,70 @@ HSD_CObj* __wrap_HSD_CObjLoadDesc(HSD_CObjDesc* desc)
 {
     swap_cobj_desc(desc);
     return __real_HSD_CObjLoadDesc(desc);
+}
+
+static void swap_vertices(HSD_VtxDescList* v)
+{
+    for (; v && pc_hsd_claim(v, sizeof *v, PC_HSD_VERTEX); ++v) {
+        v->attr = swap32(v->attr);
+        v->attr_type = swap32(v->attr_type);
+        v->comp_cnt = swap32(v->comp_cnt);
+        v->comp_type = swap32(v->comp_type);
+        v->stride = swap16(v->stride);
+        if (v->attr == GX_VA_NULL) break;
+    }
+}
+
+static void swap_pobj_desc(HSD_PObjDesc* p)
+{
+    for (; p && pc_hsd_claim(p, sizeof *p, PC_HSD_POBJ); p = p->next) {
+        p->flags = swap16(p->flags);
+        p->n_display = swap16(p->n_display);
+        swap_vertices(p->verts);
+        if ((p->flags & 0x3000) == POBJ_ENVELOPE && p->u.envelope_p) {
+            HSD_EnvelopeDesc** list;
+            for (list = p->u.envelope_p; *list; ++list) {
+                HSD_EnvelopeDesc* e;
+                for (e = *list; e->joint; ++e) {
+                    if (pc_hsd_claim(e, sizeof *e, PC_HSD_ENVELOPE)) swap_f32(&e->weight);
+                }
+            }
+        }
+        if ((p->flags & 0x3000) == POBJ_SHAPEANIM)
+            pc_sys_log("pc_hsd_swap: shape animation descriptor conversion not implemented\n");
+    }
+}
+
+HSD_PObj* __real_HSD_PObjLoadDesc(HSD_PObjDesc* desc);
+HSD_PObj* __wrap_HSD_PObjLoadDesc(HSD_PObjDesc* desc)
+{
+    swap_pobj_desc(desc);
+    return __real_HSD_PObjLoadDesc(desc);
+}
+
+static void swap_vec(Vec3* v)
+{
+    swap_f32(&v->x); swap_f32(&v->y); swap_f32(&v->z);
+}
+
+static void swap_joint_tree(HSD_Joint* j)
+{
+    for (; j && pc_hsd_claim(j, sizeof *j, PC_HSD_JOINT); j = j->next) {
+        unsigned r, c;
+        j->flags = swap32(j->flags);
+        swap_vec(&j->rotation); swap_vec(&j->scale); swap_vec(&j->position);
+        if (j->mtx && pc_hsd_claim(j->mtx, sizeof(Mtx), PC_HSD_MATRIX)) {
+            for (r = 0; r < 3; ++r) for (c = 0; c < 4; ++c) swap_f32(&j->mtx[r][c]);
+        }
+        swap_joint_tree(j->child);
+    }
+}
+
+HSD_JObj* __real_HSD_JObjLoadJoint(HSD_Joint* joint);
+HSD_JObj* __wrap_HSD_JObjLoadJoint(HSD_Joint* joint)
+{
+    /* Child loading is inlined within jobj.c, so convert the shared descriptor
+       graph up front. Claiming before recursion also handles instance cycles. */
+    swap_joint_tree(joint);
+    return __real_HSD_JObjLoadJoint(joint);
 }

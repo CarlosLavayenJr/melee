@@ -66,6 +66,7 @@ u32 OSGetConsoleSimulatedMemSize(void) { return GC_RAM_SIZE; }
    HSD_DevComDVDWakeUp). */
 extern void pc_ar_poll(void);
 extern void pc_dvd_poll(void);
+extern void pc_gx_finish_poll(void);
 
 static BOOL interrupts_enabled = 1;
 
@@ -106,6 +107,7 @@ static void pc_deliver_completions(void)
     delivering_completions = 1;
     pc_ar_poll();
     pc_dvd_poll();
+    pc_gx_finish_poll();
     delivering_completions = 0;
 }
 

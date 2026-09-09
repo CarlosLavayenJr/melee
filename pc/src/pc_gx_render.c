@@ -137,3 +137,18 @@ void __wrap_GXCopyDisp(void* dest, GXBool clear)
     frame_cmd = VK_NULL_HANDLE;
     __real_GXCopyDisp(dest, clear);
 }
+
+/* The PE finish interrupt may be delivered only after submitted GPU work
+   completes. A mid-frame GXDrawDone also flushes the current command buffer. */
+void pc_gx_render_finish(void)
+{
+    if (!window_ready) return;
+    if (frame_cmd != VK_NULL_HANDLE) {
+        pc_vulkan_end_frame();
+        frame_cmd = VK_NULL_HANDLE;
+    }
+    if (vkQueueWaitIdle(pc_vulkan_graphics_queue()) != VK_SUCCESS) {
+        pc_sys_log("pc_gx_render: GPU completion failed\n");
+        pc_sys_exit(1);
+    }
+}
