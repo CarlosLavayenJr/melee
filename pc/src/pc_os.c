@@ -80,13 +80,41 @@ BOOL OSDisableInterrupts(void)
     return prev;
 }
 
+/* Guards the pair below as a unit, not just each one against itself.
+   pc_ar_drain() and pc_dvd_poll() already stop *themselves* from nesting,
+   but that leaves them exposed to *each other*: a DVD completion, running
+   inside pc_dvd_poll()'s loop, can post an ARQ request whose own
+   OSRestoreInterrupts() call is a genuine 0->1 edge from this function's
+   point of view -- pc_ar_drain()'s own guard doesn't cover it, because we
+   are inside pc_dvd_poll()'s frame, not pc_ar_drain()'s. Letting it through
+   ran an entire ARAM completion -- including devcom's linked-list unlink
+   and freelist recycling -- to completion before the DVD callback that
+   triggered it had reached its own unlink, corrupting the list (confirmed:
+   main.ssm's own devcom entry got recycled and reread, loading its header
+   into an already-full bank 0 a second time). One shared guard defers the
+   nested edge instead of firing it: whatever it would have delivered stays
+   pending until a later, genuinely non-nested edge picks it up -- which
+   arrives quickly, since disable/restore brackets nearly every critical
+   section in the tree. */
+static int delivering_completions;
+
+static void pc_deliver_completions(void)
+{
+    if (delivering_completions) {
+        return;
+    }
+    delivering_completions = 1;
+    pc_ar_poll();
+    pc_dvd_poll();
+    delivering_completions = 0;
+}
+
 BOOL OSEnableInterrupts(void)
 {
     BOOL prev = interrupts_enabled;
     interrupts_enabled = 1;
     if (!prev) {
-        pc_ar_poll();
-        pc_dvd_poll();
+        pc_deliver_completions();
     }
     return prev;
 }
@@ -96,8 +124,7 @@ BOOL OSRestoreInterrupts(BOOL level)
     BOOL prev = interrupts_enabled;
     interrupts_enabled = level;
     if (!prev && level) {
-        pc_ar_poll();
-        pc_dvd_poll();
+        pc_deliver_completions();
     }
     return prev;
 }
