@@ -1188,8 +1188,16 @@ void HSD_SynthResetStreamCounters(int result, int length, void* buf, bool b)
     HSD_Synth_804D7778 = 0;
 }
 
+#ifdef PC_GX_RENDERER
+#include "pc_hps.h"
+#include "pc_sys.h"
+#endif
+
 void HSD_Synth_8038AD74(u32 offset, uintptr_t src)
 {
+#ifdef PC_GX_RENDERER
+    pc_hps_block_to_native(&lbl_804C4540[HSD_Synth_804D7768]);
+#endif
     HSD_DevComRequest(HSD_Synth_804D7764, src,
                       HSD_Synth_804D7780 + (HSD_Synth_804D7768 << 16),
                       lbl_804C4540[HSD_Synth_804D7768].x0, 0x23, 0,
@@ -1340,6 +1348,9 @@ void HSD_Synth_8038B120(void)
 
 void HSD_SynthPStreamFirstHakoHeaderCallback(void)
 {
+#ifdef PC_GX_RENDERER
+    pc_hps_block_to_native(&lbl_804C4540[HSD_Synth_804D7768]);
+#endif
     HSD_DevComRequest(HSD_Synth_804D7764, 0xA0,
                       HSD_Synth_804D7780 + (HSD_Synth_804D7768 << 16),
                       lbl_804C4540[HSD_Synth_804D7768].x0, 0x23, 0,
@@ -1355,6 +1366,12 @@ void HSD_SynthPStreamHeaderCallback(int arg0, int arg1, void* arg2,
 
     node = getNode(HSD_Synth_804D7760);
     if (node != NULL) {
+#ifdef PC_GX_RENDERER
+        if (pc_hps_header_to_native(entry)) {
+            pc_sys_log("pc_hps: invalid stream header\n");
+            pc_sys_exit(1);
+        }
+#endif
         node->voice_count = entry[3];
         if (node->voice_count == 2) {
             node->voice[1] = AXAcquireVoice(0x1D, dropcallback, 0);

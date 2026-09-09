@@ -1,5 +1,22 @@
 # Handoff — September 9, 2026 checkpoint
 
+## Latest: HPS stream metadata fixed; opening movie header is next
+
+Audio metadata now converts at the three stream-header consumption callbacks.
+Observed raw HPS header magic was " HALPST", rate=32000, channels=2 (the earlier
+one-channel hypothesis below was not correct). Native code had truncated
+0x02000000 to an 8-bit voice_count=0. Only header u32 fields and AX 16-bit
+records are swapped; ADPCM payloads remain raw. `hps_endian_test.c` passes.
+The controlled input run now gets beyond AXSetVoiceMix into MvOpen.mth loading.
+
+Next crash: lbmthp.c fn_8001ECF4 receives NULL allocation because movie header
+width/height/buffer sizes are still big-endian. Convert the MTH metadata and
+frame-size words with validated bounds. THPDec.c also contains MWCC-only
+paired-single assembly with missing native paths: audit before treating decoded
+movie output as valid. Do not silently substitute blank/video placeholders.
+
+---
+
 ## Beyond the text prompt: card-context layout fixed
 
 Controlled PADStatus A-button pulses through the real menu code now reach
