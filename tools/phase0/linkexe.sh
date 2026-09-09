@@ -180,6 +180,13 @@ for d in $(find extern/dolphin/src -type d); do INCLUDES="$INCLUDES -I $d"; done
 # MSL/printf.c is excluded too: it compiles but is written against MWCC's
 # varargs intrinsics (__builtin_va_info), which have no host counterpart.
 # pc/src/pc_printf.c replaces it.
+# Always wrapped, independent of --trace-gx/--renderer: pc_hsd_swap.c fixes
+# up HSD_CObjDesc's still-big-endian non-pointer fields (flags, viewport,
+# scissor, roll, near/far, and the projection-specific tail) before CObjLoad
+# reads them -- a correctness fix, not a renderer feature, so it applies to
+# every build the same way pc_dvd.c's archive schema does.
+LDFLAGS="$LDFLAGS -Wl,--wrap=HSD_CObjInit -Wl,--wrap=HSD_CObjLoadDesc"
+
 WRAPPED="GXBegin GXCallDisplayList GXLoadTexObj GXSetTevOrder GXSetProjection GXLoadPosMtxImm GXCopyDisp"
 # pc_gx_trace.c implements only the list above. pc_gx_render.c implements
 # that same list plus these -- init and the clear color have no trace-mode
