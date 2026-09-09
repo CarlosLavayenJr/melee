@@ -1,40 +1,24 @@
 # Handoff — September 9, 2026 checkpoint
 
-## Current blocker: particle data bank byte order, at VS scene entry
+## Current blocker: map collision data byte order, in stage loading
 
-The title staging blocker below is fixed and boot now runs past the opening
-movie and the title into `gm_Scene_Vs_OnEnter`, where it segfaults:
+The particle bank blocker below is fixed and boot now runs further into the VS
+scene, from effect loading (gm_16AE.c:1992) to stage loading (gm_16AE.c:2007),
+where it segfaults:
 
 ```
-psInitDataBankLocate (cmdBank=0x802ef360, texBank=0x80300b60, formBank=0x0)
-    at src/sysdolphin/baselib/particle.c:214   cmd[2] = cmd[2] & 0xF1FFFFFF;
-  efAsync_OnLoad (data=0x802eef40, length=1334111) efasync.c:1282
-  lbDvd_GetPreloadedArchive (entry_num=215) -> lbDvd_8001819C("EfCoData.dat")
-  efAsync_LoadSync(idx=0) -> fn_8016E730(vs_enter_data) gm_16AE.c:1992
-  gm_Scene_Vs_OnEnter
+mpLibLoad (coll_data=0x812118d4) at src/melee/mp/mplib.c:920
+    joint->bounding_min.x = f31 * coll_data->joints[i].left_bound;
+  Ground_801C0800 (pair=0x886fdf4) ground.c:505
+  Stage_8022524C () stage.c:520
+  fn_8016E730(vs_enter_data) gm_16AE.c:2007 -> gm_Scene_Vs_OnEnter
 ```
 
-The locals are plainly still big-endian: `version = 16896` (0x4200, which is
-0x42 = 66 swapped, and the function branches on `version >= 0x44`),
-`num2 = 6290752` (0x600100), `base`/`ptr` pointing at 0x145b5f, and
-`cmd = 0x88ccb500`, which is what actually faults.
-
-This is a descriptor schema, not a provenance or staging problem. The archive
-itself is converted correctly now: `map_ptcl` and `map_texg` are reached
-through `HSD_ArchiveGetPublicAddress`, so the header, tables and every
-relocation-named pointer are already in host order. What is not converted is
-the particle bank's own interior — the command counts at `((s32*) cmdBank)[1]`
-and `[2]`, the version word, the texture-group count at `((s32*) texBank)[0]`,
-and the command words `psInitDataBankLocate` masks and ORs. None of those are
-named by the relocation table, so nothing generic can know their width.
-
-Write it as a schema the same way the material graph was done in
-`pc_hsd_swap.c`: read `particle.c` for the layout it walks, convert at the one
-entry point (`psInitDataBankLocate`, wrapped), guard with `pc_hsd_claim` so it
-runs once and skips natively built banks, and validate after converting —
-a version outside the range `particle.c` branches on should abort with a
-diagnostic rather than walk a bank that will fault. Do NOT widen provenance
-bounds or skip the assert to get past it.
+Same shape as every schema before it: the archive is converted, the collision
+data inside it is not. Read what mplib.c walks -- joint counts, bounds, vertex
+and line tables -- and write the schema against that, wrapped at mpLibLoad,
+guarded with pc_hsd_claim so it runs once and skips natively built data, and
+with every count checked through pc_hsd_in_archive before the walk follows it.
 
 ## What is verified this session
 

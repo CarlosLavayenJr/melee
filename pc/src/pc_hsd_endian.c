@@ -29,6 +29,18 @@ void pc_hsd_archive_body(void* data, size_t size)
     memset(words + (p - RAM_BASE) / 4, 0x80, size / 4);
 }
 
+int pc_hsd_in_archive(const void* data, size_t size)
+{
+    uintptr_t p = (uintptr_t)data;
+    size_t i, first, last;
+    if (!data || !size || p < RAM_BASE || p >= RAM_BASE + RAM_BYTES) return 0;
+    if (size > RAM_BASE + RAM_BYTES - p) return 0;
+    first = (p - RAM_BASE) / 4;
+    last = (p - RAM_BASE + size - 1) / 4;
+    for (i = first; i <= last; i++) if (!words[i]) return 0;
+    return 1;
+}
+
 int pc_hsd_claim(void* data, size_t size, unsigned kind)
 {
     uintptr_t p = (uintptr_t)data;

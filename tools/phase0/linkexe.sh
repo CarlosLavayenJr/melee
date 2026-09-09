@@ -201,6 +201,7 @@ LDFLAGS="$LDFLAGS -Wl,--wrap=GXSetDrawDone -Wl,--wrap=GXDrawDone"
 LDFLAGS="$LDFLAGS -Wl,--wrap=HSD_JObjLoadJoint -Wl,--wrap=HSD_WObjInit"
 LDFLAGS="$LDFLAGS -Wl,--wrap=HSD_MObjLoadDesc -Wl,--wrap=HSD_TObjLoadDesc"
 LDFLAGS="$LDFLAGS -Wl,--wrap=HSD_ArchiveParse -Wl,--wrap=lbArchiveRelocate"
+LDFLAGS="$LDFLAGS -Wl,--wrap=psInitDataBankLocate"
 
 WRAPPED="GXBegin GXCallDisplayList GXLoadTexObj GXSetTevOrder GXSetProjection GXLoadPosMtxImm GXCopyDisp"
 # pc_gx_trace.c implements only the list above. pc_gx_render.c implements
