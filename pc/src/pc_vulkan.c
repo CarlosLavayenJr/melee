@@ -253,6 +253,55 @@ static int create_window(unsigned width, unsigned height, const char* title)
     return 0;
 }
 
+/* ---- frame rate ---------------------------------------------------------
+ *
+ * Presented frames per second, in the title bar next to the app name. This
+ * counts real vkQueuePresentKHR calls, so it measures what the window
+ * actually shows -- not the game's internal frame counter, which advances
+ * inside OSSleepThread whether or not anything was drawn.
+ *
+ * Uses the Win32 clock directly rather than pc_sys_mono_ns, to stay
+ * independent of the host time layer the game's own pacing runs on.
+ */
+static char title_base[128];
+static LARGE_INTEGER fps_freq, fps_mark;
+static unsigned fps_frames;
+
+static void fps_init(const char* title)
+{
+    size_t i;
+    for (i = 0; i + 1 < sizeof title_base && title[i]; i++) {
+        title_base[i] = title[i];
+    }
+    title_base[i] = '\0';
+    QueryPerformanceFrequency(&fps_freq);
+    QueryPerformanceCounter(&fps_mark);
+    fps_frames = 0;
+}
+
+static void fps_tick(void)
+{
+    LARGE_INTEGER now;
+    double elapsed;
+
+    if (window == NULL || fps_freq.QuadPart == 0) {
+        return;
+    }
+    fps_frames++;
+    QueryPerformanceCounter(&now);
+    elapsed = (double) (now.QuadPart - fps_mark.QuadPart) /
+              (double) fps_freq.QuadPart;
+    if (elapsed >= 0.5) {
+        char buf[160];
+        double fps = fps_frames / elapsed;
+        wsprintfA(buf, "%s - %d.%d fps", title_base, (int) fps,
+                  (int) ((fps - (int) fps) * 10.0));
+        SetWindowTextA(window, buf);
+        fps_mark = now;
+        fps_frames = 0;
+    }
+}
+
 void pc_vulkan_pump_events(void)
 {
     MSG msg;
@@ -600,6 +649,7 @@ static int create_commands_and_sync(void)
 int pc_vulkan_init(unsigned width, unsigned height, const char* title)
 {
     if (create_window(width, height, title)) return 1;
+    fps_init(title);
     if (create_instance(title)) return 1;
     if (pick_physical_device()) return 1;
     if (create_device()) return 1;
@@ -738,6 +788,7 @@ void pc_vulkan_end_frame(void)
     } else if (r != VK_SUCCESS) {
         fail("vkQueuePresentKHR", r);
     }
+    fps_tick();
 }
 
 VkDevice pc_vulkan_device(void) { return device; }

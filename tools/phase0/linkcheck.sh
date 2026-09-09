@@ -25,7 +25,7 @@ rm -rf "$OUT"; mkdir -p "$OUT/obj"
 # quoted includes. GCC does that too, but the Dolphin sources also reach
 # sideways -- vi.c includes "__gx.h" from the gx directory -- so every source
 # subdirectory goes on the path.
-INCLUDES="-I src -I extern/dolphin/include -I extern/dolphin/include/libc -I extern/dolphin/src"
+INCLUDES="-I src -I extern/dolphin/include -I extern/dolphin/include/libc -I extern/dolphin/src -I pc/src"
 for d in $(find extern/dolphin/src -type d); do INCLUDES="$INCLUDES -I $d"; done
 # src/MSL is added only alongside the freestanding headers. Its stddef.h types
 # intptr_t as `int`, which is right for the 32-bit ABI the decomp targets and

@@ -5,6 +5,12 @@
 #define THP_SDATA __declspec(section ".sdata")
 #else
 #define THP_SDATA
+/* The entropy and IDCT kernels below exist only as MWCC inline assembly. The
+   native C equivalents live in a header so pc/tests/thp_kernel_test.c can
+   exercise them directly; every use is inside an `#else` of the same guard
+   that selects the assembly, so the MWCC build is unchanged. */
+#include "pc_thp_kernels.h"
+#include "pc_sys.h"
 #endif
 
 static char __THP420Error[] = "ERROR: THP only supports 4:2:0!!!\n";
@@ -63,8 +69,35 @@ struct THPLCWork {
     u8* offsets672[2][9];
     u8* work512[3];
 };
+#ifdef __MWERKS__
 static struct THPLCWork __THPLC;
 extern u8* __THPLCWork672[3];
+#else
+/* THPInit writes both of these through a single `struct THPInitWork`, which
+   only works because the console linker placed them adjacently: work672 sits
+   past the end of __THPLC. A native linker orders independent globals as it
+   likes, so the store would land on whatever follows and __THPLCWork672 --
+   the base every decoded MCU row is written through -- would stay null.
+   Declare the real layout as one object instead, as card_host_storage.h does
+   for the memory-card context. THPInit itself is unchanged: it still casts
+   &__THPLC, which is this aggregate's first member. */
+struct THPInitWork {
+    struct THPLCWork cache;
+    u8* work672[3];
+};
+static struct THPInitWork __THPLCAll;
+#define __THPLC (__THPLCAll.cache)
+#define __THPLCWork672 (__THPLCAll.work672)
+
+/* 16 KB of locked L1 the console addresses at 0xE0000000 and THP uses as
+   scratch for one MCU row. Ordinary memory here; LCStoreData (pc_ppc.c)
+   copies out of it. Under MWCC THP_LC_BASE is the original constant. */
+static u8 __THPLCStorage[0x4000] ATTRIBUTE_ALIGN(32);
+#define THP_LC_BASE ((u8*) __THPLCStorage)
+#endif
+#ifdef __MWERKS__
+#define THP_LC_BASE ((u8*) 0xE0000000)
+#endif
 
 typedef struct THPRestartFields {
     u8 pad[0x8FC];
@@ -95,7 +128,15 @@ void __THPPrepBitStream(THPFileInfo* info)
     }
 
     info->file = (u8*) ptr;
+#ifdef __MWERKS__
     info->currByte = *ptr;
+#else
+    /* currByte is a big-endian word consumed MSB first -- on the console this
+       load is a `lwz`, and so is every refill inside the entropy kernels. A
+       host load would reverse the bytes and decode every code from the wrong
+       bits, header parsing having been byte-at-a-time and therefore fine. */
+    info->currByte = pc_thp_load_word((const u8*) ptr);
+#endif
 
     for (i = 0; i < 4; i++) {
         if (info->validHuffmanTabs & (1 << i)) {
@@ -1016,8 +1057,78 @@ void THPDec_803313D0(s32 arg0, void* arg1, void* arg2, void* arg3, u32 x)
     }
 }
 
+#ifndef __MWERKS__
+/* --- native adapters -----------------------------------------------------
+ *
+ * The kernels in pc_thp_kernels.h take plain pointers so that they can be
+ * tested without dragging in dolphin.h. These four functions are the whole of
+ * the coupling to THPFileInfo: they lift the bit-reader triple and a Huffman
+ * table into that shape and put the reader state back afterwards.
+ */
+static void __THPBitStateLoad(PcThpBitState* s, THPFileInfo* info)
+{
+    s->file = (const u8*) info->file;
+    s->word = info->currByte;
+    s->cnt = info->cnt;
+}
+
+static void __THPBitStateStore(const PcThpBitState* s, THPFileInfo* info)
+{
+    info->file = (u8*) s->file;
+    info->currByte = s->word;
+    info->cnt = s->cnt;
+}
+
+static void __THPHuffViewInit(PcThpHuffView* v, const THPHuffmanTab* h)
+{
+    v->quick = h->quick;
+    v->increment = h->increment;
+    v->Vij = h->Vij;
+    v->maxCode = h->maxCode;
+    v->valPtr = h->valPtr;
+}
+
+/* A code longer than any in the table means the bitstream and the tables
+   disagree. Continuing would emit a plausible-looking but wrong frame, so
+   stop and say where. */
+static void __THPBitStreamFailed(const char* what)
+{
+    OSReport("pc_mth: THP %s: no Huffman code matches the bitstream\n", what);
+    pc_sys_log("pc_mth: THP entropy decode failed; refusing to emit a "
+               "guessed frame\n");
+    pc_sys_exit(1);
+}
+
+/* Decode one block into `block`, advancing `info`'s reader. Replaces the
+   MWCC bodies of __THPHuffDecodeDCTCompY/U/V, whose only differences are
+   which Huffman tables and which predictor they use. */
+static void __THPDecodeBlockNative(THPFileInfo* info, THPCoeff* block,
+                                   const THPHuffmanTab* dc,
+                                   const THPHuffmanTab* ac, THPCoeff* pred,
+                                   const char* what)
+{
+    PcThpBitState s;
+    PcThpHuffView dcv, acv;
+
+    __THPBitStateLoad(&s, info);
+    __THPHuffViewInit(&dcv, dc);
+    __THPHuffViewInit(&acv, ac);
+    if (pc_thp_decode_block(&s, &dcv, &acv, __THPJpegNaturalOrder, pred,
+                            block) != 0) {
+        __THPBitStateStore(&s, info);
+        __THPBitStreamFailed(what);
+    }
+    __THPBitStateStore(&s, info);
+}
+#endif
+
 inline void __THPInverseDCTNoYPos(register THPCoeff* in, register u32 xPos)
 {
+#ifndef __MWERKS__
+    /* The two IDCT entry points differ only in the row the block lands on:
+       "NoYPos" is the top half of the MCU, "Y8" the bottom. */
+    pc_thp_idct(in, Gq.value, Gbase.value, Gwid.value, xPos, 0);
+#else
     register f32 *q, *ws;
     register f32 tmp0, tmp1, tmp2, tmp3, tmp4, tmp5, tmp6, tmp7, tmp8, tmp9;
     register f32 tmp10, tmp11, tmp12, tmp13;
@@ -1313,10 +1424,14 @@ inline void __THPInverseDCTNoYPos(register THPCoeff* in, register u32 xPos)
         }
 #endif // clang-format on
     }
+#endif
 }
 
 inline void __THPInverseDCTY8(register THPCoeff* in, register u32 xPos)
 {
+#ifndef __MWERKS__
+    pc_thp_idct(in, Gq.value, Gbase.value, Gwid.value, xPos, 8);
+#else
     register f32 *q, *ws;
     register f32 tmp0, tmp1, tmp2, tmp3, tmp4, tmp5, tmp6, tmp7, tmp8, tmp9;
     register f32 tmp10, tmp11, tmp12, tmp13;
@@ -1623,11 +1738,28 @@ inline void __THPInverseDCTY8(register THPCoeff* in, register u32 xPos)
         }
 #endif // clang-format on
     }
+#endif
 }
 
 inline s32 __THPHuffDecodeTab(register THPFileInfo* info,
                               register THPHuffmanTab* h)
 {
+#ifndef __MWERKS__
+    {
+        PcThpBitState s;
+        PcThpHuffView v;
+        s32 sym;
+
+        __THPBitStateLoad(&s, info);
+        __THPHuffViewInit(&v, h);
+        sym = pc_thp_huff_decode(&s, &v);
+        __THPBitStateStore(&s, info);
+        if (sym < 0) {
+            __THPBitStreamFailed("symbol");
+        }
+        return sym;
+    }
+#else
     register s32 code;
     register u32 cnt;
     register s32 cb;
@@ -1863,6 +1995,7 @@ _FailedCheckNoBits1:
 
     info->cnt = (u32) tmp;
     return (h->Vij[(s32) (code + h->valPtr[cnt])]);
+#endif
 }
 
 typedef struct THPFileInfoDCTCompYView {
@@ -2018,6 +2151,11 @@ static void __THPDecompressiMCURowNxN(THPFileInfo* info, u32 x)
 static void __THPHuffDecodeDCTCompY(register THPFileInfo* info,
                                     THPCoeff* block)
 {
+#ifndef __MWERKS__
+    __THPDecodeBlockNative(info, block, Ydchuff.value, Yachuff.value,
+                           &((THPFileInfoDCTCompYView*) info)->predDC,
+                           "luma block");
+#else
     {
         register s32 t;
         THPCoeff dc;
@@ -2397,11 +2535,17 @@ static void __THPHuffDecodeDCTCompY(register THPFileInfo* info,
         info->cnt = cnt;
         info->currByte = cb;
     }
+#endif
 }
 
 static void __THPHuffDecodeDCTCompU(register THPFileInfo* info,
                                     THPCoeff* block)
 {
+#ifndef __MWERKS__
+    __THPDecodeBlockNative(info, block, Udchuff.value, Uachuff.value,
+                           &((THPFileInfoDCTCompUView*) info)->predDC,
+                           "Cb block");
+#else
     THPCoeff dc;
 
     register s32 v; // r0
@@ -2529,11 +2673,17 @@ static void __THPHuffDecodeDCTCompU(register THPFileInfo* info,
             k += 15;
         }
     }
+#endif
 }
 
 static void __THPHuffDecodeDCTCompV(register THPFileInfo* info,
                                     THPCoeff* block)
 {
+#ifndef __MWERKS__
+    __THPDecodeBlockNative(info, block, Vdchuff.value, Vachuff.value,
+                           &((THPFileInfoDCTCompVView*) info)->predDC,
+                           "Cr block");
+#else
     THPCoeff dc;
 
     register s32 v; // r0
@@ -2661,6 +2811,7 @@ static void __THPHuffDecodeDCTCompV(register THPFileInfo* info,
             k += 15;
         }
     }
+#endif
 }
 
 #define OS_GQR_F32 0x0000
@@ -2679,11 +2830,13 @@ struct THPLCSizeEntry {
     u32 size;
 };
 
+#ifdef __MWERKS__
 /// THPInit initializes the adjacent LC work objects as one layout.
 struct THPInitWork {
     struct THPLCWork cache;
     u8* work672[3];
 };
+#endif
 
 static struct THPLCSizeEntry __THPLCSizeTableA[5] = {
     { 0, 0x1000 },
@@ -2742,11 +2895,11 @@ void THPInit(void)
     struct THPInitWork* work = (struct THPInitWork*) &__THPLC;
 
     if ((PPCMfhid2() & 0x10000000) == 0) {
-        DCInvalidateRange((void*) 0xE0000000, 0x4000);
+        DCInvalidateRange(THP_LC_BASE, 0x4000);
         LCEnable();
     }
 
-    base = (u8*) 0xE0000000;
+    base = THP_LC_BASE;
     for (j = 0; j < 2; j++) {
         for (i = 0; i < 5; i++) {
             work->cache.offsets512[j][i] = base;
@@ -2754,7 +2907,7 @@ void THPInit(void)
         }
     }
 
-    base = (u8*) 0xE0000000;
+    base = THP_LC_BASE;
     for (j = 0; j < 2; j++) {
         for (i = 0; i < 9; i++) {
             work->cache.offsets672[j][i] = base;
@@ -2762,14 +2915,14 @@ void THPInit(void)
         }
     }
 
-    base             = (u8*) 0xE0000000;
+    base             = THP_LC_BASE;
     work->cache.work512[0] = base;
     base += 0x2000;
     work->cache.work512[1] = base;
     base += 0x800;
     work->cache.work512[2] = base;
 
-    base             = (u8*) 0xE0000000;
+    base             = THP_LC_BASE;
     work->work672[0] = base;
     base += 0x2800;
     work->work672[1] = base;
@@ -2779,4 +2932,6 @@ void THPInit(void)
     OSInitFastCast();
 }
 
+#ifdef __MWERKS__
 u8* __THPLCWork672[3];
+#endif

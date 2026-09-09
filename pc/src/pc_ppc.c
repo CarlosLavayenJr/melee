@@ -4,16 +4,17 @@
  * are pure assembly. They fall into three groups, and all three collapse on
  * x86 for reasons worth stating rather than assuming.
  *
- * Cache maintenance (DC*, LC*). The GameCube's CPU and GPU do not share a
- * coherent view of memory, so the SDK flushes a range before the GPU reads it
- * and invalidates one after a DMA writes it. x86 hardware keeps caches
- * coherent, so every one of these is correctly empty here -- not "stubbed out
- * for now" but genuinely unnecessary.
+ * Cache maintenance (DC*). The GameCube's CPU and GPU do not share a coherent
+ * view of memory, so the SDK flushes a range before the GPU reads it and
+ * invalidates one after a DMA writes it. x86 hardware keeps caches coherent,
+ * so every one of these is correctly empty here -- not "stubbed out for now"
+ * but genuinely unnecessary.
  *
  * The locked cache (LC*) is different in kind: it is 16 KB of L1 the console
- * can address directly as fast scratch. Nothing on x86 corresponds to it. The
- * calls succeed and the memory the game uses is ordinary RAM, which is slower
- * than the hardware intended and otherwise behaves the same.
+ * can address directly as fast scratch. Nothing on x86 corresponds to it, so
+ * the memory the game uses is ordinary RAM -- slower than the hardware
+ * intended and otherwise the same. But LCLoadData/LCStoreData and their block
+ * forms are transfers, not hints: they must move the bytes.
  *
  * Special-purpose registers, the PPCMf and PPCMt families, read and write
  * machine state --
@@ -50,25 +51,43 @@ void DCZeroRange(void* addr, u32 nBytes)
     }
 }
 
-/* --- locked cache: no host equivalent --- */
+/* --- locked cache ---
+ *
+ * Enabling and disabling it have no host meaning, but the transfer calls are
+ * not cache maintenance: they are a DMA engine moving bytes between locked
+ * cache and main memory, and callers depend on the bytes arriving. THP is the
+ * one that matters here -- __THPDecompressiMCURow* decodes a whole MCU row
+ * into locked-cache scratch and LCStoreData's it into the frame plane, so a
+ * no-op silently discards every decoded pixel. Copy for real.
+ */
+static void pc_lc_copy(void* dest, const void* src, u32 nBytes)
+{
+    unsigned char* d = (unsigned char*) dest;
+    const unsigned char* s = (const unsigned char*) src;
+    u32 i;
+    for (i = 0; i < nBytes; i++) {
+        d[i] = s[i];
+    }
+}
+
 void LCEnable(void)  { }
 void LCDisable(void) { }
 void LCLoadBlocks(void* dest, void* src, u32 numBlocks)
 {
-    (void) dest; (void) src; (void) numBlocks;
+    pc_lc_copy(dest, src, numBlocks * 32u); /* a block is one 32-byte line */
 }
 void LCStoreBlocks(void* dest, void* src, u32 numBlocks)
 {
-    (void) dest; (void) src; (void) numBlocks;
+    pc_lc_copy(dest, src, numBlocks * 32u);
 }
 u32 LCLoadData(void* dest, void* src, u32 nBytes)
 {
-    (void) dest; (void) src;
+    pc_lc_copy(dest, src, nBytes);
     return nBytes;
 }
 u32 LCStoreData(void* dest, void* src, u32 nBytes)
 {
-    (void) dest; (void) src;
+    pc_lc_copy(dest, src, nBytes);
     return nBytes;
 }
 void LCQueueWait(u32 len) { (void) len; }

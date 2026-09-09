@@ -354,13 +354,6 @@ static s32 fn_8001EF5C(THPDecComp* data)
     BOOL intr;
 
     if ((u32) data->unk_94 != data->unk_90) {
-#ifdef PC_GX_RENDERER
-        /* THPDec.c's Huffman receive and IDCT kernels are MWCC assembly only.
-           The host's empty branches otherwise use uninitialized coefficients.
-           Replace these kernels with native C before enabling movie decoding. */
-        pc_sys_log("pc_mth: native THP Huffman/IDCT kernels not implemented; cannot decode opening movie\n");
-        pc_sys_exit(1);
-#endif
         intr = OSDisableInterrupts();
         data->unk_98 = THPVideoDecode(
             &data->unk_A8, &spC, (void*) data->unk_98,

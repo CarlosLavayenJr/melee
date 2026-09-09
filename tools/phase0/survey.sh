@@ -25,7 +25,7 @@ mkdir -p "$OUT/logs"
 # Note: kept as a flat string, not an array -- bash cannot export arrays into
 # the subshells that xargs spawns, and the decomp's own libc must precede the
 # host's on the include path or its math.h loses to glibc's.
-INCLUDES="-I src -I extern/dolphin/include -I extern/dolphin/include/libc -I extern/dolphin/src"
+INCLUDES="-I src -I extern/dolphin/include -I extern/dolphin/include/libc -I extern/dolphin/src -I pc/src"
 
 # -m32 is the port's real target (ACGC-PC-Port builds mingw-w64-i686), but it
 # needs 32-bit libc headers that a plain x86-64 box may not have. Rather than
