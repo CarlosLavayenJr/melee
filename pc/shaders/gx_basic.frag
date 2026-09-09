@@ -3,33 +3,50 @@
 layout(location = 0) in vec4 vColor;
 layout(location = 1) in vec2 vUV;
 layout(location = 0) out vec4 outColor;
-layout(set=0, binding=0) uniform sampler2D gxTexture;
-layout(push_constant) uniform PushConstants {
-    mat4 mvp;
-    vec4 reg0;
-    uint color;
-    uint alpha;
+layout(set=0, binding=0) uniform sampler2D gxTextures[8];
+layout(std140, set=0, binding=1) uniform Material {
+    vec4 initialRegisters[4];
+    vec4 konst[4];
+    uvec4 stages[4];
+    uint count;
     uint compare;
-    uint textured;
+    uvec2 reserved;
 } pc;
+vec4 registers[4];
 
-vec3 colorInput(uint n, vec4 t) {
-    switch(n) {
-    case 2: return pc.reg0.rgb;
-    case 3: return pc.reg0.aaa;
-    case 8: return t.rgb;
-    case 9: return t.aaa;
-    case 10: return vColor.rgb;
-    case 11: return vColor.aaa;
-    case 12: return vec3(1);
-    case 13: return vec3(0.5);
-    default: return vec3(0); // ZERO; unsupported inputs rejected by CPU
+// Constant sampler indices do not require descriptor-indexing device features.
+vec4 sampleTexture(uint slot) {
+    switch(slot) {
+    case 0: return texture(gxTextures[0], vUV);
+    case 1: return texture(gxTextures[1], vUV);
+    case 2: return texture(gxTextures[2], vUV);
+    case 3: return texture(gxTextures[3], vUV);
+    case 4: return texture(gxTextures[4], vUV);
+    case 5: return texture(gxTextures[5], vUV);
+    case 6: return texture(gxTextures[6], vUV);
+    case 7: return texture(gxTextures[7], vUV);
+    default: return vec4(0);
     }
 }
-float alphaInput(uint n, vec4 t) {
-    if(n == 1) return pc.reg0.a;
+
+vec3 colorInput(uint n, vec4 t, vec4 k, vec4 raster) {
+    if (n < 8) return (n & 1) == 0 ? registers[n/2].rgb : registers[n/2].aaa;
+    switch(n) {
+    case 8: return t.rgb;
+    case 9: return t.aaa;
+    case 10: return raster.rgb;
+    case 11: return raster.aaa;
+    case 12: return vec3(1);
+    case 13: return vec3(0.5);
+    case 14: return k.rgb;
+    default: return vec3(0);
+    }
+}
+float alphaInput(uint n, vec4 t, vec4 k, vec4 raster) {
+    if(n < 4) return registers[n].a;
     if(n == 4) return t.a;
-    if(n == 5) return vColor.a;
+    if(n == 5) return raster.a;
+    if(n == 6) return k.a;
     return 0;
 }
 vec3 operation(vec3 a, vec3 b, vec3 c, vec3 d, uint op) {
@@ -55,12 +72,22 @@ bool comparison(uint op, float a, float refValue) {
 }
 
 void main() {
-    vec4 t = pc.textured != 0 ? texture(gxTexture, vUV) : vec4(0);
-    uint c = pc.color, a = pc.alpha;
-    vec3 rgb = operation(colorInput((c>>12)&15,t), colorInput((c>>8)&15,t),
-                         colorInput((c>>4)&15,t), colorInput(c&15,t), c);
-    float alpha = operation(vec3(alphaInput((a>>13)&7,t)), vec3(alphaInput((a>>10)&7,t)),
-                             vec3(alphaInput((a>>7)&7,t)), vec3(alphaInput((a>>4)&7,t)), a).x;
+    for (uint i = 0; i < 4; ++i) registers[i] = pc.initialRegisters[i];
+    for (uint i = 0; i < pc.count; ++i) {
+        uvec4 stage = pc.stages[i];
+        uint c = stage.x, a = stage.y;
+        vec4 t = sampleTexture(stage.z), k = pc.konst[i];
+        vec4 raster = stage.w == 0 ? vColor : vec4(0);
+        vec3 rgb = operation(colorInput((c>>12)&15,t,k,raster), colorInput((c>>8)&15,t,k,raster),
+                             colorInput((c>>4)&15,t,k,raster), colorInput(c&15,t,k,raster), c);
+        float alpha = operation(vec3(alphaInput((a>>13)&7,t,k,raster)), vec3(alphaInput((a>>10)&7,t,k,raster)),
+                                 vec3(alphaInput((a>>7)&7,t,k,raster)), vec3(alphaInput((a>>4)&7,t,k,raster)), a).x;
+        // Evaluate both operations before either write; RGB/alpha destinations differ.
+        registers[(c>>22)&3].rgb = rgb;
+        registers[(a>>22)&3].a = alpha;
+    }
+    vec3 rgb = registers[0].rgb;
+    float alpha = registers[0].a;
     float alpha8 = round(clamp(alpha, 0, 1) * 255.0);
     bool p = comparison((pc.compare>>16)&7, alpha8, float(pc.compare&255));
     bool q = comparison((pc.compare>>19)&7, alpha8, float((pc.compare>>8)&255));

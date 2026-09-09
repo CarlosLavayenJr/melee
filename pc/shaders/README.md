@@ -1,10 +1,13 @@
 # Shaders
 
-Latest checkpoint: these shaders now accept UVs and implement a validated subset
-of single-stage TEV arithmetic, alpha comparison and REG0 inputs. Unsupported
-states are rejected by pc_gx_material.c; this is not complete/bit-exact TEV.
-The SIS byte-order fix enabled verified real-font rendering of the memory-card
-message. Broader material configurations remain unverified; see HANDOFF.md.
+Latest checkpoint: UVs and up to four ADD/SUB TEV stages, including register
+feedback, konst selectors, eight texture bindings and alpha comparison. The
+game's four-stage YUV movie program renders a verified real opening frame.
+Vertex push constants contain a 64-byte projection matrix. Fragment state is
+an immutable 208-byte std140 uniform block per draw (see pc_gx_material.h).
+Unsupported states are diagnosed by pc_gx_material.c. Arithmetic is still
+floating-point, not bit-exact GX fixed-point; rounding and unclamped-register
+feedback need further audit. Broader materials remain unverified; see HANDOFF.md.
 Regenerate binaries AND embedded aligned headers with `./pc/shaders/regenerate.ps1`.
 The original design notes below predate this implementation.
 

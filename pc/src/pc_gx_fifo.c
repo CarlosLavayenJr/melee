@@ -4,8 +4,8 @@
  * list is a pre-recorded FIFO command stream, and it reaches
  * GXCallDisplayList as an opaque (void*, u32) -- no amount of intercepting
  * individual GX* calls decodes what's inside one. This does, for the subset
- * confirmed needed so far: position and one vertex color, direct or
- * indexed, no textures or TEV yet (those are later milestones).
+ * confirmed needed so far: position, color0 and TEX0, direct or indexed,
+ * feeding the validated material/texture path in pc_gx_material.c.
  *
  * Every opcode and register offset below is cross-checked against two
  * independent sources that have to agree, not read from either alone: the
@@ -20,8 +20,8 @@
  *
  * What this does NOT decode: LOAD_INDX_{A,B,C,D} (indexed XF loads, used
  * for skinning matrices -- skipped, logged once), nested CALL_DL (skipped,
- * logged), and any vertex color format other than RGBA8/RGB8 (logged,
- * rendered white rather than guessed). All are read past correctly -- the
+ * logged). All six packed/unpacked GX vertex color formats are supported.
+ * Unsupported command payloads are read past at their known lengths -- the
  * stream never desyncs from them -- just not acted on yet.
  */
 #include "pc_sys.h"
@@ -253,11 +253,17 @@ typedef struct {
 #define PC_MAX_VERTS 65536
 static pc_vertex_t vertex_buf[PC_MAX_VERTS];
 static unsigned frame_vertices;
+#define PC_MAX_DRAWS 16384
+static unsigned frame_draws;
+static VkBuffer material_ubo;
+static VkDeviceMemory material_ubo_mem;
+static VkDeviceSize material_stride;
 
 static VkDescriptorPool descriptor_pool;
 static VkDescriptorSetLayout descriptor_layout;
 void pc_gx_fifo_begin_frame(void) {
     frame_vertices = 0;
+    frame_draws = 0;
     if (descriptor_pool) vkResetDescriptorPool(pc_vulkan_device(), descriptor_pool, 0);
 }
 
@@ -272,6 +278,28 @@ static void mtx_transform(const float m[3][4], const float in[3], float out[3])
 static void read_color(reader_t* r, unsigned char type, float out[4])
 {
     switch (type) {
+    case GX_RGB565: {
+        unsigned v = rd_u16(r), red = (v >> 11) & 31, green = (v >> 5) & 63, blue = v & 31;
+        out[0] = ((red << 3) | (red >> 2)) / 255.0f;
+        out[1] = ((green << 2) | (green >> 4)) / 255.0f;
+        out[2] = ((blue << 3) | (blue >> 2)) / 255.0f;
+        out[3] = 1.0f;
+        break;
+    }
+    case GX_RGBA4: {
+        unsigned v = rd_u16(r);
+        for (unsigned c=0; c<4; ++c) out[c] = (((v >> (12-c*4)) & 15) * 17) / 255.0f;
+        break;
+    }
+    case GX_RGBA6: {
+        unsigned v = rd_u8(r);
+        v = (v << 8) | rd_u8(r); v = (v << 8) | rd_u8(r);
+        for (unsigned c=0; c<4; ++c) {
+            unsigned n = (v >> (18-c*6)) & 63;
+            out[c] = ((n << 2) | (n >> 4)) / 255.0f;
+        }
+        break;
+    }
     case GX_RGB8: {
         unsigned int r8 = rd_u8(r), g8 = rd_u8(r), b8 = rd_u8(r);
         out[0] = (float) r8 / 255.0f;
@@ -299,16 +327,14 @@ static void read_color(reader_t* r, unsigned char type, float out[4])
     }
     default: {
         static int warned;
-        /* RGB565/RGBA4/RGBA6 -- bit-packed formats not decoded yet. Skip
-           the right number of bytes (comp_type_size already knows it) so
-           the stream stays in sync, and render white rather than guess. */
+        /* Unknown formats cannot safely produce a vertex. */
         unsigned int i, n = comp_type_size(GX_VA_CLR0, type);
         for (i = 0; i < n; i++) rd_u8(r);
         if (!warned) {
             warned = 1;
-            pc_sys_log("pc_gx_fifo: unsupported vertex color format "
-                       "(RGB565/RGBA4/RGBA6); rendering white\n");
+            pc_sys_log("pc_gx_fifo: unsupported vertex color format; primitive rejected\n");
         }
+        r->overrun = 1;
         out[0] = out[1] = out[2] = out[3] = 1.0f;
         break;
     }
@@ -341,7 +367,7 @@ static void skip_direct(reader_t* r, GXAttr attr, const pc_vat_fmt_t* vf)
    time a draw actually happens (GXInit runs long before any vertex format
    is configured, so there is nothing to build a pipeline against yet). */
 static VkPipelineLayout pipeline_layout;
-static VkPipeline pipeline[8];
+static VkPipeline pipeline[32];
 static VkBuffer vertex_vbo;
 static VkDeviceMemory vertex_vbo_mem;
 static int pipeline_ready;
@@ -450,10 +476,11 @@ static int ensure_pipeline(void)
     memset(&rs, 0, sizeof rs);
     rs.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
     rs.polygonMode = VK_POLYGON_MODE_FILL;
-    rs.cullMode = VK_CULL_MODE_NONE; /* GXSetCullMode not tracked yet --
-        see pc/GX_RENDERER.md milestone 2; drawing both faces is the safe
-        default until it is. */
-    rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    rs.cullMode = VK_CULL_MODE_NONE;
+    /* GX's front-facing sprite order is top-left, top-right, bottom-right
+       with upward world Y (sobjlib.c). Preserve it through our projection Y
+       flip and positive-height Vulkan viewport; tested with that ordering. */
+    rs.frontFace = VK_FRONT_FACE_CLOCKWISE;
     rs.lineWidth = 1.0f;
 
     memset(&ms, 0, sizeof ms);
@@ -476,20 +503,24 @@ static int ensure_pipeline(void)
     dyn.dynamicStateCount = 2;
     dyn.pDynamicStates = dyn_states;
 
-    pcr.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    pcr.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
     pcr.offset = 0;
-    pcr.size = 96;
+    pcr.size = 64;
     {
-        VkDescriptorSetLayoutBinding binding = {0};
+        VkDescriptorSetLayoutBinding bindings[2] = {{0}, {0}};
         VkDescriptorSetLayoutCreateInfo ci = {0};
-        VkDescriptorPoolSize size = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 16384};
+        VkDescriptorPoolSize sizes[2] = {
+            {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, PC_MAX_DRAWS * 8},
+            {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, PC_MAX_DRAWS}};
         VkDescriptorPoolCreateInfo pool = {0};
-        binding.binding = 0; binding.descriptorType = size.type;
-        binding.descriptorCount = 1; binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        bindings[0].binding = 0; bindings[0].descriptorType = sizes[0].type;
+        bindings[0].descriptorCount = 8; bindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        bindings[1].binding = 1; bindings[1].descriptorType = sizes[1].type;
+        bindings[1].descriptorCount = 1; bindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
         ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        ci.bindingCount = 1; ci.pBindings = &binding;
+        ci.bindingCount = 2; ci.pBindings = bindings;
         pool.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        pool.maxSets = 16384; pool.poolSizeCount = 1; pool.pPoolSizes = &size;
+        pool.maxSets = PC_MAX_DRAWS; pool.poolSizeCount = 2; pool.pPoolSizes = sizes;
         if (vkCreateDescriptorSetLayout(dev, &ci, NULL, &descriptor_layout) != VK_SUCCESS ||
             vkCreateDescriptorPool(dev, &pool, NULL, &descriptor_pool) != VK_SUCCESS) {
             pc_sys_log("pc_gx_fifo: descriptor allocation failed\n"); return 1;
@@ -522,7 +553,11 @@ static int ensure_pipeline(void)
     gpci.renderPass = pc_vulkan_render_pass();
     gpci.subpass = 0;
 
-    for (unsigned key = 0; key < 8; ++key) {
+    for (unsigned key = 0; key < 32; ++key) {
+        /* GXSetCullMode exchanges FRONT/BACK before writing BP genMode. */
+        static const VkCullModeFlags cull[4] = {VK_CULL_MODE_NONE, VK_CULL_MODE_BACK_BIT,
+            VK_CULL_MODE_FRONT_BIT, VK_CULL_MODE_FRONT_AND_BACK};
+        rs.cullMode = cull[key >> 3];
         cba.blendEnable = key & 1;
         cba.srcColorBlendFactor = cba.srcAlphaBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
         cba.dstColorBlendFactor = cba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
@@ -561,6 +596,25 @@ static int ensure_pipeline(void)
     }
     vkBindBufferMemory(dev, vertex_vbo, vertex_vbo_mem, 0);
 
+    {
+        VkPhysicalDeviceProperties properties;
+        VkDeviceSize alignment;
+        vkGetPhysicalDeviceProperties(pc_vulkan_physical_device(), &properties);
+        alignment = properties.limits.minUniformBufferOffsetAlignment;
+        material_stride = (PC_GX_MATERIAL_UNIFORM_SIZE + alignment - 1) / alignment * alignment;
+        bci.size = material_stride * PC_MAX_DRAWS;
+        bci.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+        if (vkCreateBuffer(dev, &bci, NULL, &material_ubo) != VK_SUCCESS) return 1;
+        vkGetBufferMemoryRequirements(dev, material_ubo, &mreq);
+        mai.allocationSize = mreq.size;
+        mai.memoryTypeIndex = find_memory_type(pc_vulkan_physical_device(), mreq.memoryTypeBits,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        if (vkAllocateMemory(dev, &mai, NULL, &material_ubo_mem) != VK_SUCCESS ||
+            vkBindBufferMemory(dev, material_ubo, material_ubo_mem, 0) != VK_SUCCESS) {
+            pc_sys_log("pc_gx_fifo: material buffer allocation failed\n"); return 1;
+        }
+    }
+
     pipeline_ready = 1;
     return 0;
 }
@@ -573,21 +627,28 @@ static void flush_draw(VkCommandBuffer cmd, unsigned int count)
     unsigned int width, height;
     VkViewport viewport;
     VkRect2D scissor;
-    struct { float mvp[16], reg0[4]; unsigned color, alpha, compare, textured; } push;
+    struct { float mvp[16]; } push;
     pc_gx_material material;
     pc_gx_texture_binding texture;
+    VkDescriptorImageInfo images[8];
+    VkDescriptorBufferInfo uniform;
     VkDescriptorSet descriptor;
     VkDescriptorSetAllocateInfo ai = {0};
-    VkWriteDescriptorSet write = {0};
-    _Static_assert(sizeof push == 96, "shader push ABI");
+    VkWriteDescriptorSet writes[2] = {{0}, {0}};
+    _Static_assert(sizeof push == 64, "shader push ABI");
+    _Static_assert(offsetof(pc_gx_material, texture_mask) == PC_GX_MATERIAL_UNIFORM_SIZE, "shader uniform ABI");
     int r, c;
     VkDeviceSize offset = 0;
 
     if (cmd == VK_NULL_HANDLE || count == 0 || !pc_gx_material_get(&material) || ensure_pipeline()) return;
-    if (!pc_gx_texture_get(material.textured ? material.slot : 0, &texture)) {
-        if (material.textured) {
+    for (unsigned slot = 0; slot < 8; ++slot) {
+        if (!(material.texture_mask & (1u << slot))) continue;
+        if (!pc_gx_texture_get(slot, &texture)) {
             pc_sys_log("pc_gx_fifo: required texture unbound; draw skipped\n"); return;
         }
+        images[slot] = texture.descriptor;
+    }
+    if (!material.texture_mask && !pc_gx_texture_get(0, &texture)) {
         /* A descriptor must be valid even when the shader does not sample it.
            This neutral resource is never used to replace a missing texture. */
         static const unsigned char neutral[32] = {0};
@@ -597,18 +658,31 @@ static void flush_draw(VkCommandBuffer cmd, unsigned int count)
         if (pc_gx_texture_load(0, 0, 1, 1, 1, neutral, sizeof neutral, &sampler) ||
             !pc_gx_texture_get(0, &texture)) return;
     }
+    /* Unused array entries still need valid descriptors, but are never sampled. */
+    for (unsigned slot = 0; slot < 8; ++slot)
+        if (!(material.texture_mask & (1u << slot))) images[slot] = texture.descriptor;
+    if (frame_draws >= PC_MAX_DRAWS) {
+        pc_sys_log("pc_gx_fifo: per-frame material buffer exhausted\n"); return;
+    }
     ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     ai.descriptorPool = descriptor_pool; ai.descriptorSetCount = 1; ai.pSetLayouts = &descriptor_layout;
     if (vkAllocateDescriptorSets(pc_vulkan_device(), &ai, &descriptor) != VK_SUCCESS) {
         pc_sys_log("pc_gx_fifo: per-frame descriptor pool exhausted\n"); return;
     }
-    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; write.dstSet = descriptor;
-    write.descriptorCount = 1; write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    write.pImageInfo = &texture.descriptor;
-    vkUpdateDescriptorSets(pc_vulkan_device(), 1, &write, 0, NULL);
-    memcpy(push.reg0, material.reg0, 16);
-    push.color = material.color; push.alpha = material.alpha;
-    push.compare = material.compare; push.textured = material.textured;
+    uniform.buffer = material_ubo; uniform.offset = frame_draws * material_stride;
+    uniform.range = PC_GX_MATERIAL_UNIFORM_SIZE;
+    if (vkMapMemory(pc_vulkan_device(), material_ubo_mem, 0, VK_WHOLE_SIZE, 0, &mapped) != VK_SUCCESS) {
+        pc_sys_log("pc_gx_fifo: material mapping failed\n"); return;
+    }
+    memcpy((unsigned char*)mapped + uniform.offset, &material, PC_GX_MATERIAL_UNIFORM_SIZE);
+    vkUnmapMemory(pc_vulkan_device(), material_ubo_mem);
+    writes[0].sType = writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].dstSet = writes[1].dstSet = descriptor;
+    writes[0].descriptorCount = 8; writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[0].pImageInfo = images;
+    writes[1].dstBinding = 1; writes[1].descriptorCount = 1;
+    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; writes[1].pBufferInfo = &uniform;
+    vkUpdateDescriptorSets(pc_vulkan_device(), 2, writes, 0, NULL);
 
     if (count > PC_MAX_VERTS - frame_vertices) {
         pc_sys_log("pc_gx_fifo: per-frame vertex buffer exhausted; draw skipped\n");
@@ -651,18 +725,19 @@ static void flush_draw(VkCommandBuffer cmd, unsigned int count)
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1, &descriptor, 0, NULL);
     vkCmdSetViewport(cmd, 0, 1, &viewport);
     vkCmdSetScissor(cmd, 0, 1, &scissor);
-    vkCmdPushConstants(cmd, pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+    vkCmdPushConstants(cmd, pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT, 0,
                        sizeof push, &push);
     vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_vbo, &offset);
     vkCmdDraw(cmd, count, 1, 0, 0);
     pc_vulkan_mark_draw();
     frame_vertices += count;
+    frame_draws++;
     {
         static int reported;
         if (!reported) {
             reported = 1;
             pc_sys_log("pc_gx_fifo: first real GX geometry recorded in Vulkan\n");
-            pc_sys_log("pc_gx_fifo: validated single-stage TEV and sampled texture path active; broader GX state remains unsupported\n");
+            pc_sys_log("pc_gx_fifo: validated four-stage TEV and multi-texture path active; broader GX state remains unsupported\n");
         }
     }
 }

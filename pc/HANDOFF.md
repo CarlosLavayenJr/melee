@@ -1,5 +1,38 @@
 # Handoff — September 9, 2026 checkpoint
 
+## Latest renderer milestone: real opening-movie frame in Vulkan
+
+The game-issued movie quad now renders its three decoded I8 planes through the
+actual four-stage TEV program from sobjlib.c. An application framebuffer capture
+at movie frame 90 visibly shows the blue sky/trophy scene. The user also saw the
+intro in the window. The short appearance ended because the GDB capture test
+finished, not because that test crashed. No external video player, fake frame,
+scene bypass or preconverted game asset is involved.
+
+Renderer changes: up to four ADD/SUB TEV stages, PREV/REG0/1/2 inputs/outputs,
+per-stage konst selectors with separate konst storage, eight sampler bindings,
+208-byte std140 material snapshots per draw, and front/back/all culling pipeline
+variants. Texgens may select any generated coordinate that is identity TEX0;
+arbitrary texture matrices and independent TEX1+ vertex coordinates still fail.
+RGB565/RGBA4/RGBA6 vertex colors now decode rather than substituting white.
+
+`pc/tests/run_renderer_tests.ps1 -Gpu` runs clocks/alarms, material/BP state,
+immediate/packed-color decoding, and actual Vulkan readback of four synthetic
+YUV triples plus same-frame material/texture lifetime and sprite culling tests.
+GPU values agree with the TEV arithmetic reference within 1 byte for those
+samples. Arithmetic remains floating-point, not bit-exact GX fixed-point;
+rounding, unclamped register feedback/wrapping and broader materials need audit.
+No Vulkan validation-layer coverage is claimed (layer unavailable here).
+
+Next: longer uninterrupted opening playback (frame-90 capture is the current
+verified endpoint), then remaining depth attachments/state and nonidentity
+texgen support. An earlier run was interrupted around an archive-provenance
+abort after user input; if this recurs, capture the full caller and archive
+address before changing provenance bounds. No title-screen/gameplay/audio/saves
+claim. All movie dumps and framebuffer captures remain ignored under build/.
+
+---
+
 ## Latest: clock initialization fixed; content-bearing movie frames verified
 
 `pc_bootinfo_init` now publishes the IPL bus/core clock words (162/486 MHz).

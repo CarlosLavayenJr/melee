@@ -1,6 +1,10 @@
 # Native texture upload
 
-Verified update: after correcting SIS byte-order reads, actual sampled font
+Latest: real opening-movie imagery is verified in Vulkan from three decoded
+I8 planes and the game's four-stage TEV program. Each draw has eight immutable
+sampler bindings plus its own uniform-buffer slice. This is not full GX support.
+
+Earlier verified update: after correcting SIS byte-order reads, actual sampled font
 glyphs render the two-line memory-card message in a Vulkan readback. This
 confirms the narrow menu texture/TEV path, not arbitrary materials or gameplay.
 
@@ -24,10 +28,10 @@ implemented. Texture payloads must not be byte-swapped by the archive loader.
 ## Renderer integration
 
 `pc_gx_texture_get(slot, &binding)` exposes an image view, sampler, image
-layout and dimensions for each of the eight GX slots. The next shader step
-must bind these to **immutable per-draw descriptor sets** and supply the real
-GX texture coordinates/TEV state. Upload alone does not make the existing
-position/color-only pipeline draw textured geometry.
+layout and dimensions for each of the eight GX slots. These now feed immutable
+per-draw descriptor sets, driven by the real GX texture coordinates/TEV state.
+Missing required slots reject the draw; unused descriptors are valid resources
+that are never sampled, not fallback visuals.
 
 GXLoadTexObj can occur during a render pass, so uploads use a separate
 command pool and synchronous submissions on the graphics queue. Each upload

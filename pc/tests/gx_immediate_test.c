@@ -55,6 +55,19 @@ int main(void)
         read_color(&r, GX_RGBX8, color);
         assert(r.p == bytes+4 && color[0] == 10/255.0f && color[3] == 1.0f);
     }
-    puts("PASS: native immediate floats, textured-vertex stride, quad expansion, truncation and color enums");
+    {
+        unsigned char bytes[3] = {0xf8, 0x1f, 0};
+        float color[4]; reader_t r = {bytes, bytes+2, 0};
+        read_color(&r, GX_RGB565, color);
+        assert(!r.overrun && color[0]==1 && color[1]==0 && color[2]==1 && color[3]==1);
+        bytes[0]=0x12; bytes[1]=0x34; r=(reader_t){bytes,bytes+2,0};
+        read_color(&r, GX_RGBA4, color);
+        assert(color[0]==17/255.0f && color[1]==34/255.0f && color[2]==51/255.0f && color[3]==68/255.0f);
+        bytes[0]=0x04; bytes[1]=0x2a; bytes[2]=0xbf; r=(reader_t){bytes,bytes+3,0};
+        read_color(&r, GX_RGBA6, color);
+        assert(color[0]==4/255.0f && color[1]==8/255.0f && color[2]==170/255.0f && color[3]==1);
+        r=(reader_t){bytes,bytes+2,0}; read_color(&r,GX_RGBA6,color); assert(r.overrun);
+    }
+    puts("PASS: immediate floats/UVs, quad expansion, truncation and packed vertex colors");
     return 0;
 }
