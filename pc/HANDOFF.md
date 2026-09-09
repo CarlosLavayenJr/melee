@@ -1,5 +1,31 @@
 # Handoff — September 9, 2026 checkpoint
 
+## Beyond the text prompt: card-context layout fixed
+
+Controlled PADStatus A-button pulses through the real menu code now reach
+`gm_Scene_Opening_OnEnter`. This is not physical-keyboard verification or a
+game-state bypass. Keyboard mappings: J=A, K=B, Enter=Start, WASD=stick,
+arrows=D-pad, L=X, I=Y, U=Z, Space=L-trigger. Run from repo root:
+`./build/phase2/melee_host.exe` (PowerShell uses `.\build\phase2\melee_host.exe`).
+
+The next crash after confirming no-card was card-context storage, not card I/O:
+the code assumes three independently declared globals occupy one contiguous
+0x1510-byte context. The native linker put the command array BEFORE its header,
+so base+0x10 read unrelated `hsd_804D799C=2` as a command with a NULL state.
+`card_host_storage.h` now defines a single aggregate with asserted offsets
+0x10 and 0x1210, retaining the original console definitions outside renderer
+builds. `card_storage_test.c` exercises all 128 command positions.
+
+Next observed crash is opening-scene streaming audio: HSD_SynthPStreamHeaderCallback
+reads raw big-endian HPS metadata as native (`voice_count` becomes zero from
+0x01000000; sample ratio becomes 256). A later AXSetVoiceMix receives NULL voice[1].
+Fix the stream metadata schema, not a NULL-voice guard or fake audio output.
+Some `.dat` header-only reads also log "truncated HSD archive body"; audit partial
+archive reads separately. The initial text remains visually verified, but no
+opening scene or gameplay is verified yet.
+
+---
+
 ## Latest VERIFIED checkpoint: readable native menu text
 
 The SIS endian blocker below is fixed. A Vulkan framebuffer readback was

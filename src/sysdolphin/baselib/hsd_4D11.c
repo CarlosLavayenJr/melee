@@ -11,9 +11,14 @@
 /// @todo Declared as `__jmp_buf` (0xF8 bytes) by users, but the object is
 /// 0x828 bytes: a JpegWork whose first member is the jmp_buf (see hsd_3B34.c).
 /* 4D2648 */ u8 hsd_804D2648[0x828];
+#ifdef PC_GX_RENDERER
+#include "card_host_storage.h"
+HSD_CardHostStorage hsd_card_host_storage;
+#else
 /* 4D2348 */ u8 hsd_804D2348[0x300];
 /* 4D1148 */ u32 hsd_804D1148[0x80][0x9];
 /* 4D1138 */ u8 hsd_804D1138[0x10];
+#endif
 
 /* 4D799C */ s32 hsd_804D799C;
 /* 4D7998 */ s32 hsd_804D7998;
