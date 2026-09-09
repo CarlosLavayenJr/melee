@@ -1,5 +1,40 @@
 # Handoff — September 9, 2026 checkpoint
 
+## Latest WIP: texture/shader wiring; current blocker supersedes status below
+
+New code loads the native font atlas from the user's GALE01 revision-2 disc
+DATA section only (no executable-code translation or extraction). It preserves
+bounded native GXTexObj sources, decoded UVs, immutable per-draw descriptors,
+and BP register state. The new shader implements a validated single-stage TEV
+subset, alpha comparison and source-alpha blending/write masks. Regenerate
+SPIR-V and embedded headers with `pc/shaders/regenerate.ps1`. No assets committed.
+
+**Readable text is NOT verified.** The latest build now fails explicitly at
+`pc_gx_render: unknown native texture source`, called from
+`HSD_SisLib_803A84BC`, hsd_3A76.c:896. GDB: glyph_idx=0x1d20,
+tex_offset=0xfffffd20, source=font_base+0x1fa4000. At line 830,
+`glyph_idx = *(u16*)sis_cursor` reads the SIS byte stream in native little-endian;
+the expected glyph ID is 0x201d. Do NOT widen source bounds to accept this pointer.
+
+Next: audit SIS reader AND producer byte order, including text measurement/layout
+and inline signed/unsigned 16-bit parameters; fix consistently, then rebuild and
+capture the actual menu. Avoid fixing only one glyph read while leaving spacing
+and text-control parameters backward. The earlier white boxes remain the last
+visually confirmed checkpoint, not evidence that this shader already works.
+
+Clean renderer build linked: 1141 objects, 34 placeholders. Startup confirmed
+`font atlas loaded from user disc data`, then the source-bounds failure above.
+Texture CPU/GPU readback, direct-UV decoder, and material-state tests pass.
+The material-state guards were tightened/unit-tested after the full build.
+Vulkan validation layer unavailable. New `gx_material_test.c` tests BP masks,
+konst/TEV register separation, menu state and unsupported-state rejection.
+
+This is NOT complete/bit-exact GX: extra TEV stages, PREV/REG1/REG2/konst inputs,
+compare ops, nonidentity texgen/swap, fog and most blend/depth states remain
+unsupported and diagnosed. Preserve this checkpoint before further changes.
+
+---
+
 Checkout: `C:\Users\Owner\melee`, branch `claude/sync-branch-update-pr033u`.
 The texture branch `codex/gx-texture-upload` was merged in `08c5ba7b7`.
 The older handoff below is retained as history, **not current blocker/status**.

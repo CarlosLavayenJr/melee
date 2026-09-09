@@ -11,6 +11,12 @@ void pc_vulkan_mark_draw(void) {}
 VkPhysicalDevice pc_vulkan_physical_device(void) { return VK_NULL_HANDLE; }
 VkRenderPass pc_vulkan_render_pass(void) { return VK_NULL_HANDLE; }
 void pc_vulkan_extent(unsigned* w, unsigned* h) { *w = 640; *h = 480; }
+int pc_gx_material_get(pc_gx_material* out) { (void)out; assert(0); return 0; }
+void pc_gx_bp_write(unsigned int value) { (void)value; }
+int pc_gx_texture_get(unsigned slot, pc_gx_texture_binding* out) { (void)slot; (void)out; assert(0); return 0; }
+int pc_gx_texture_load(unsigned slot, unsigned fmt, unsigned w, unsigned h, unsigned levels,
+    const void* source, size_t size, const VkSamplerCreateInfo* sampler)
+{ (void)slot; (void)fmt; (void)w; (void)h; (void)levels; (void)source; (void)size; (void)sampler; assert(0); return -1; }
 void __real_GXSetVtxDesc(GXAttr a, GXAttrType t) { (void)a; (void)t; }
 void __real_GXClearVtxDesc(void) {}
 void __real_GXSetVtxAttrFmt(GXVtxFmt f, GXAttr a, GXCompCnt c, GXCompType t, u8 n)
@@ -33,6 +39,8 @@ int main(void)
     assert(immediate_size == 83 && immediate_expected == 0);
     for (i = 0; i < 6; ++i) for (c = 0; c < 3; ++c)
         assert(vertex_buf[i].pos[c] == coords[indices[i]][c]);
+    for (i = 0; i < 6; ++i) for (c = 0; c < 2; ++c)
+        assert(vertex_buf[i].uv[c] == coords[indices[i]][c+3]);
     pc_gx_immediate_end();
     pc_gx_immediate_begin(VK_NULL_HANDLE, GX_QUADS, 0, 4);
     pc_gx_immediate_write(&coords[0][0], 4);

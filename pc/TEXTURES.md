@@ -1,5 +1,10 @@
 # Native texture upload
 
+Latest checkpoint: UVs and immutable sampled-image descriptors are wired into a
+constrained single-stage TEV shader. Visual verification is still blocked by SIS
+glyph byte order producing an invalid font pointer; see the top of HANDOFF.md.
+Native font bytes are loaded from the user's disc data, never committed.
+
 `__wrap_GXLoadTexObj` now decodes I4, I8, IA4, IA8, RGB565,
 RGB5A3, RGBA8 and CMPR into `VK_FORMAT_R8G8B8A8_UNORM` images.
 Mips use complete GX tiles, including the smallest levels. The bridge reads

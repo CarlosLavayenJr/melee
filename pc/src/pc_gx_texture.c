@@ -279,7 +279,8 @@ int pc_gx_texture_load(unsigned slot, unsigned format, unsigned width,
     return 0;
 }
 
-int pc_gx_texture_load_obj(const void* obj, unsigned slot)
+int pc_gx_texture_load_obj_source(const void* obj, unsigned slot,
+                                 const void* source, size_t source_size)
 {
     /* SDK layout from extern/dolphin/src/dolphin/gx/GXTexture.c.
        Native words are NOT swapped; only the texture payload is big-endian.
@@ -310,7 +311,11 @@ int pc_gx_texture_load_obj(const void* obj, unsigned slot)
         dimension = w > h ? w : h;
         while (levels <= lod && dimension > 1) { ++levels; dimension /= 2; }
     }
-    if (physical >= (24u << 20)) { report("GXLoadTexObj: source outside RAM"); return -1; }
+    if (!source) {
+        if (physical >= (24u << 20)) { report("GXLoadTexObj: source outside RAM"); return -1; }
+        source = (const void*)(uintptr_t)(physical | 0x80000000u);
+        source_size = (24u << 20) - physical;
+    }
     sampler.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
     sampler.addressModeU = wraps[words[0] & 3];
     sampler.addressModeV = wraps[(words[0] >> 2) & 3];
@@ -340,5 +345,10 @@ int pc_gx_texture_load_obj(const void* obj, unsigned slot)
         if (!warned++) report("anisotropy/bias clamp not implemented; using isotropic sampling");
     }
     return pc_gx_texture_load(slot, f, w, h, levels,
-        (const void*)(uintptr_t)(physical | 0x80000000u), (24u << 20) - physical, &sampler);
+        source, source_size, &sampler);
+}
+
+int pc_gx_texture_load_obj(const void* obj, unsigned slot)
+{
+    return pc_gx_texture_load_obj_source(obj, slot, NULL, 0);
 }

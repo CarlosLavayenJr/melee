@@ -590,6 +590,37 @@ int pc_dvd_mount(void)
         return 0;
     }
 
+#ifdef PC_GX_RENDERER
+    {
+        /* Read DATA only from the supplied executable's section table. No code
+           is executed, translated, or extracted to disk. GALE01 1.02 symbol
+           address/size comes from config/GALE01/symbols.txt. */
+        extern unsigned char HSD_SisLib_FontAtlas[0x23e00];
+        unsigned char dol_header[0x100];
+        unsigned long dol = be32(header + 0x420), section;
+        int found = 0;
+        if (header[0] != 'G' || header[1] != 'A' || header[2] != 'L' ||
+            header[3] != 'E' || header[4] != '0' || header[5] != '1' || header[7] != 2) {
+            pc_sys_log("pc_dvd: font data requires GALE01 revision 2\n");
+            pc_sys_exit(1);
+        }
+        if (pc_sys_pread(disc_fd, dol_header, sizeof dol_header, dol) == sizeof dol_header) {
+            for (section = 0; section < 11; ++section) {
+                unsigned long at = be32(dol_header + 0x64 + section * 4);
+                unsigned long size = be32(dol_header + 0xac + section * 4);
+                unsigned long offset = be32(dol_header + 0x1c + section * 4);
+                if (at <= 0x8040cd40ul && size >= 0x23e00ul &&
+                    0x8040cd40ul - at <= size - 0x23e00ul) {
+                    found = pc_sys_pread(disc_fd, HSD_SisLib_FontAtlas, 0x23e00,
+                        (unsigned long long)dol + offset + (0x8040cd40ul - at)) == 0x23e00;
+                    break;
+                }
+            }
+        }
+        if (!found) { pc_sys_log("pc_dvd: cannot read native font atlas from disc data\n"); pc_sys_exit(1); }
+        pc_sys_log("pc_dvd: font atlas loaded from user disc data\n");
+    }
+#endif
     fst_offset = be32(header + DISC_HEADER_FST_OFFSET);
     fst_size = be32(header + DISC_HEADER_FST_SIZE);
 

@@ -12,6 +12,9 @@ typedef struct pc_gx_texture_binding {
 /* Bind a GXTexObj (the current 32-byte console ABI) to one of eight slots.
    Texture bytes remain big-endian in mapped cached GameCube RAM. */
 int pc_gx_texture_load_obj(const void* obj, unsigned slot);
+/* Explicit, bounded native source; GXTexObj cannot preserve host pointers. */
+int pc_gx_texture_load_obj_source(const void* obj, unsigned slot,
+                                 const void* source, size_t source_size);
 
 /* Lower-level entry for synthetic tests and future texture producers.
    Mips are consecutively stored complete GX tiles, even for 1x1 levels.

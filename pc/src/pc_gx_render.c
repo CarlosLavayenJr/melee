@@ -21,6 +21,33 @@
 #include "pc_gx_texture.h"
 
 #include <dolphin/gx.h>
+#include <stdint.h>
+#include <string.h>
+
+/* Preserve native image pointers before GX packs them into 21 bits. Only
+   known bounded sources (mapped RAM or the runtime-loaded font) are accepted. */
+static struct { GXTexObj* obj; const void* source; size_t size; u32 image; } native_sources[1024];
+void __real_GXInitTexObj(GXTexObj*, void*, u16, u16, GXTexFmt, GXTexWrapMode, GXTexWrapMode, GXBool);
+void __wrap_GXInitTexObj(GXTexObj* obj, void* source, u16 w, u16 h, GXTexFmt fmt,
+                        GXTexWrapMode s, GXTexWrapMode t, GXBool mip)
+{
+    extern unsigned char HSD_SisLib_FontAtlas[0x23e00];
+    uintptr_t p = (uintptr_t)source, font = (uintptr_t)HSD_SisLib_FontAtlas;
+    unsigned i, empty = 1024;
+    size_t size = 0;
+    __real_GXInitTexObj(obj, source, w, h, fmt, s, t, mip);
+    if (p >= font && p - font < 0x23e00) size = 0x23e00 - (p - font);
+    else if (p >= 0x80000000u && p < 0x81800000u) size = 0x81800000u - p;
+    for (i = 0; i < 1024; ++i) {
+        if (native_sources[i].obj == obj) break;
+        if (!native_sources[i].obj && empty == 1024) empty = i;
+    }
+    if (i == 1024) i = empty;
+    if (i == 1024) { pc_sys_log("pc_gx_render: native texture registry exhausted\n"); pc_sys_exit(1); }
+    native_sources[i].obj = obj; native_sources[i].source = source;
+    native_sources[i].size = size;
+    memcpy(&native_sources[i].image, (char*)obj + 12, 4);
+}
 
 static int window_ready;
 static VkCommandBuffer frame_cmd = VK_NULL_HANDLE;
@@ -99,7 +126,16 @@ void __wrap_GXLoadTexObj(GXTexObj* obj, GXTexMapID id)
 {
     _Static_assert(sizeof(GXTexObj) == 32, "texture bridge requires 32-bit GX ABI");
     if (ensure_frame() != VK_NULL_HANDLE) {
-        pc_gx_texture_load_obj(obj, (unsigned)id);
+        unsigned i; u32 image;
+        memcpy(&image, (char*)obj + 12, 4);
+        for (i = 0; i < 1024; ++i) if (native_sources[i].obj == obj &&
+            (native_sources[i].image & 0x1fffff) == (image & 0x1fffff)) break;
+        if (i < 1024) {
+            if (!native_sources[i].size) {
+                pc_sys_log("pc_gx_render: unknown native texture source\n"); pc_sys_exit(1);
+            }
+            pc_gx_texture_load_obj_source(obj, (unsigned)id, native_sources[i].source, native_sources[i].size);
+        } else pc_gx_texture_load_obj(obj, (unsigned)id);
     }
     __real_GXLoadTexObj(obj, id);
 }

@@ -97,8 +97,15 @@
     } while (0)
 #endif
 
+#ifdef PC_GX_RENDERER
+void pc_gx_bp_write(unsigned int value);
+#define PC_GX_BP_WRITE(value) pc_gx_bp_write((unsigned int)(value))
+#else
+#define PC_GX_BP_WRITE(value) ((void)0)
+#endif
 #define GX_WRITE_RAS_REG(value)                                               \
     do {                                                                      \
+        PC_GX_BP_WRITE(value);                                                \
         GX_WRITE_U8(0x61);                                                    \
         GX_WRITE_U32(value);                                                  \
         VERIF_RAS_REG(value);                                                 \

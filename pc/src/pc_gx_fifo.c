@@ -26,6 +26,8 @@
  */
 #include "pc_sys.h"
 #include "pc_vulkan.h"
+#include "pc_gx_texture.h"
+#include "pc_gx_material.h"
 
 #include <dolphin/gx.h>
 #include <string.h>
@@ -245,13 +247,19 @@ static unsigned int attr_direct_size(GXAttr attr, const pc_vat_fmt_t* vf)
 typedef struct {
     float pos[3];
     float color[4];
+    float uv[2];
 } pc_vertex_t;
 
 #define PC_MAX_VERTS 65536
 static pc_vertex_t vertex_buf[PC_MAX_VERTS];
 static unsigned frame_vertices;
 
-void pc_gx_fifo_begin_frame(void) { frame_vertices = 0; }
+static VkDescriptorPool descriptor_pool;
+static VkDescriptorSetLayout descriptor_layout;
+void pc_gx_fifo_begin_frame(void) {
+    frame_vertices = 0;
+    if (descriptor_pool) vkResetDescriptorPool(pc_vulkan_device(), descriptor_pool, 0);
+}
 
 static void mtx_transform(const float m[3][4], const float in[3], float out[3])
 {
@@ -333,7 +341,7 @@ static void skip_direct(reader_t* r, GXAttr attr, const pc_vat_fmt_t* vf)
    time a draw actually happens (GXInit runs long before any vertex format
    is configured, so there is nothing to build a pipeline against yet). */
 static VkPipelineLayout pipeline_layout;
-static VkPipeline pipeline;
+static VkPipeline pipeline[8];
 static VkBuffer vertex_vbo;
 static VkDeviceMemory vertex_vbo_mem;
 static int pipeline_ready;
@@ -360,7 +368,7 @@ static int ensure_pipeline(void)
     VkShaderModule vert_mod, frag_mod;
     VkPipelineShaderStageCreateInfo stages[2];
     VkVertexInputBindingDescription binding;
-    VkVertexInputAttributeDescription attrs[2];
+    VkVertexInputAttributeDescription attrs[3];
     VkPipelineVertexInputStateCreateInfo vin;
     VkPipelineInputAssemblyStateCreateInfo ia;
     VkPipelineViewportStateCreateInfo vp;
@@ -420,11 +428,14 @@ static int ensure_pipeline(void)
     attrs[1].format = VK_FORMAT_R32G32B32A32_SFLOAT;
     attrs[1].offset = (unsigned int) offsetof(pc_vertex_t, color);
 
+    attrs[2].location = 2; attrs[2].binding = 0;
+    attrs[2].format = VK_FORMAT_R32G32_SFLOAT;
+    attrs[2].offset = offsetof(pc_vertex_t, uv);
     memset(&vin, 0, sizeof vin);
     vin.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
     vin.vertexBindingDescriptionCount = 1;
     vin.pVertexBindingDescriptions = &binding;
-    vin.vertexAttributeDescriptionCount = 2;
+    vin.vertexAttributeDescriptionCount = 3;
     vin.pVertexAttributeDescriptions = attrs;
 
     memset(&ia, 0, sizeof ia);
@@ -465,12 +476,30 @@ static int ensure_pipeline(void)
     dyn.dynamicStateCount = 2;
     dyn.pDynamicStates = dyn_states;
 
-    pcr.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    pcr.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     pcr.offset = 0;
-    pcr.size = 16 * sizeof(float);
+    pcr.size = 96;
+    {
+        VkDescriptorSetLayoutBinding binding = {0};
+        VkDescriptorSetLayoutCreateInfo ci = {0};
+        VkDescriptorPoolSize size = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 16384};
+        VkDescriptorPoolCreateInfo pool = {0};
+        binding.binding = 0; binding.descriptorType = size.type;
+        binding.descriptorCount = 1; binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        ci.bindingCount = 1; ci.pBindings = &binding;
+        pool.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        pool.maxSets = 16384; pool.poolSizeCount = 1; pool.pPoolSizes = &size;
+        if (vkCreateDescriptorSetLayout(dev, &ci, NULL, &descriptor_layout) != VK_SUCCESS ||
+            vkCreateDescriptorPool(dev, &pool, NULL, &descriptor_pool) != VK_SUCCESS) {
+            pc_sys_log("pc_gx_fifo: descriptor allocation failed\n"); return 1;
+        }
+    }
 
     memset(&plci, 0, sizeof plci);
     plci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    plci.setLayoutCount = 1;
+    plci.pSetLayouts = &descriptor_layout;
     plci.pushConstantRangeCount = 1;
     plci.pPushConstantRanges = &pcr;
     if (vkCreatePipelineLayout(dev, &plci, NULL, &pipeline_layout) != VK_SUCCESS) {
@@ -493,10 +522,16 @@ static int ensure_pipeline(void)
     gpci.renderPass = pc_vulkan_render_pass();
     gpci.subpass = 0;
 
-    if (vkCreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gpci, NULL,
-                                  &pipeline) != VK_SUCCESS) {
-        pc_sys_log("pc_gx_fifo: graphics pipeline creation failed\n");
-        return 1;
+    for (unsigned key = 0; key < 8; ++key) {
+        cba.blendEnable = key & 1;
+        cba.srcColorBlendFactor = cba.srcAlphaBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        cba.dstColorBlendFactor = cba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        cba.colorBlendOp = cba.alphaBlendOp = VK_BLEND_OP_ADD;
+        cba.colorWriteMask = ((key & 2) ? 7 : 0) | ((key & 4) ? 8 : 0);
+        if (vkCreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gpci, NULL,
+                                      &pipeline[key]) != VK_SUCCESS) {
+            pc_sys_log("pc_gx_fifo: graphics pipeline creation failed\n"); return 1;
+        }
     }
     vkDestroyShaderModule(dev, vert_mod, NULL);
     vkDestroyShaderModule(dev, frag_mod, NULL);
@@ -538,13 +573,42 @@ static void flush_draw(VkCommandBuffer cmd, unsigned int count)
     unsigned int width, height;
     VkViewport viewport;
     VkRect2D scissor;
-    float mvp[16];
+    struct { float mvp[16], reg0[4]; unsigned color, alpha, compare, textured; } push;
+    pc_gx_material material;
+    pc_gx_texture_binding texture;
+    VkDescriptorSet descriptor;
+    VkDescriptorSetAllocateInfo ai = {0};
+    VkWriteDescriptorSet write = {0};
+    _Static_assert(sizeof push == 96, "shader push ABI");
     int r, c;
     VkDeviceSize offset = 0;
 
-    if (cmd == VK_NULL_HANDLE || count == 0 || ensure_pipeline()) {
-        return;
+    if (cmd == VK_NULL_HANDLE || count == 0 || !pc_gx_material_get(&material) || ensure_pipeline()) return;
+    if (!pc_gx_texture_get(material.textured ? material.slot : 0, &texture)) {
+        if (material.textured) {
+            pc_sys_log("pc_gx_fifo: required texture unbound; draw skipped\n"); return;
+        }
+        /* A descriptor must be valid even when the shader does not sample it.
+           This neutral resource is never used to replace a missing texture. */
+        static const unsigned char neutral[32] = {0};
+        VkSamplerCreateInfo sampler = {0};
+        sampler.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        sampler.addressModeU = sampler.addressModeV = sampler.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        if (pc_gx_texture_load(0, 0, 1, 1, 1, neutral, sizeof neutral, &sampler) ||
+            !pc_gx_texture_get(0, &texture)) return;
     }
+    ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    ai.descriptorPool = descriptor_pool; ai.descriptorSetCount = 1; ai.pSetLayouts = &descriptor_layout;
+    if (vkAllocateDescriptorSets(pc_vulkan_device(), &ai, &descriptor) != VK_SUCCESS) {
+        pc_sys_log("pc_gx_fifo: per-frame descriptor pool exhausted\n"); return;
+    }
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; write.dstSet = descriptor;
+    write.descriptorCount = 1; write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    write.pImageInfo = &texture.descriptor;
+    vkUpdateDescriptorSets(pc_vulkan_device(), 1, &write, 0, NULL);
+    memcpy(push.reg0, material.reg0, 16);
+    push.color = material.color; push.alpha = material.alpha;
+    push.compare = material.compare; push.textured = material.textured;
 
     if (count > PC_MAX_VERTS - frame_vertices) {
         pc_sys_log("pc_gx_fifo: per-frame vertex buffer exhausted; draw skipped\n");
@@ -569,7 +633,7 @@ static void flush_draw(VkCommandBuffer cmd, unsigned int count)
         for (r = 0; r < 4; r++) {
             /* GX clip depth is [-w,0]; Vulkan is [0,w]. Positive Vulkan
                viewport height also reverses GX's upward screen Y. */
-            mvp[c * 4 + r] = (r == 1 || r == 2) ? -proj_mtx[r][c] : proj_mtx[r][c];
+            push.mvp[c * 4 + r] = (r == 1 || r == 2) ? -proj_mtx[r][c] : proj_mtx[r][c];
         }
     }
 
@@ -583,11 +647,12 @@ static void flush_draw(VkCommandBuffer cmd, unsigned int count)
     scissor.extent.width = width;
     scissor.extent.height = height;
 
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline[material.pipeline_key]);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1, &descriptor, 0, NULL);
     vkCmdSetViewport(cmd, 0, 1, &viewport);
     vkCmdSetScissor(cmd, 0, 1, &scissor);
-    vkCmdPushConstants(cmd, pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT, 0,
-                       sizeof mvp, mvp);
+    vkCmdPushConstants(cmd, pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                       sizeof push, &push);
     vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_vbo, &offset);
     vkCmdDraw(cmd, count, 1, 0, 0);
     pc_vulkan_mark_draw();
@@ -597,7 +662,7 @@ static void flush_draw(VkCommandBuffer cmd, unsigned int count)
         if (!reported) {
             reported = 1;
             pc_sys_log("pc_gx_fifo: first real GX geometry recorded in Vulkan\n");
-            pc_sys_log("pc_gx_fifo: texture coordinates/TEV/depth state not applied by the basic pipeline\n");
+            pc_sys_log("pc_gx_fifo: validated single-stage TEV and sampled texture path active; broader GX state remains unsupported\n");
         }
     }
 }
@@ -612,7 +677,7 @@ static void flush_draw(VkCommandBuffer cmd, unsigned int count)
  * missing line is a much smaller visible gap than the effort to add a
  * second pipeline topology for it right now. */
 static void emit_vertex(unsigned int* count, const float world_pos[3],
-                        const float color[4])
+                        const float color[4], const float uv[2])
 {
     float clip_pos[3];
     if (*count >= PC_MAX_VERTS) {
@@ -626,6 +691,7 @@ static void emit_vertex(unsigned int* count, const float world_pos[3],
     vertex_buf[*count].color[1] = color[1];
     vertex_buf[*count].color[2] = color[2];
     vertex_buf[*count].color[3] = color[3];
+    memcpy(vertex_buf[*count].uv, uv, 2 * sizeof(float));
     (*count)++;
 }
 
@@ -637,13 +703,15 @@ static void handle_draw(VkCommandBuffer cmd, reader_t* r, unsigned char cmd_byte
     const pc_vat_fmt_t* vf = &vtx_fmt[fmt_idx];
     static float raw_pos[PC_MAX_VERTS][3];
     static float raw_col[PC_MAX_VERTS][4];
-    unsigned short i;
+    static float raw_uv[PC_MAX_VERTS][2];
+    unsigned int i;
     unsigned int out_count = 0;
     GXAttr attr;
 
     for (i = 0; i < vtx_count && !r->overrun; i++) {
         float p[3] = {0, 0, 0};
         float c[4] = {1, 1, 1, 1};
+        float uv[2] = {0, 0};
         int have_pos = 0;
 
         for (attr = 0; attr <= GX_VA_TEX7; attr++) {
@@ -668,6 +736,12 @@ static void handle_draw(VkCommandBuffer cmd, reader_t* r, unsigned char cmd_byte
                         p[2] = read_direct_component(&ar, vf->attrs[attr].type, vf->attrs[attr].frac);
                     }
                     have_pos = 1;
+                } else if (attr == GX_VA_TEX0) {
+                    reader_t ar = {arr->base + (size_t)idx * arr->stride, NULL, 0};
+                    ar.end = ar.p + attr_direct_size(attr, vf);
+                    uv[0] = read_direct_component(&ar, vf->attrs[attr].type, vf->attrs[attr].frac);
+                    if (comp_cnt_count(attr, vf->attrs[attr].cnt) > 1)
+                        uv[1] = read_direct_component(&ar, vf->attrs[attr].type, vf->attrs[attr].frac);
                 } else if (attr == GX_VA_CLR0) {
                     reader_t ar;
                     ar.p = arr->base + (unsigned long) idx * arr->stride;
@@ -685,6 +759,10 @@ static void handle_draw(VkCommandBuffer cmd, reader_t* r, unsigned char cmd_byte
                     p[2] = read_direct_component(r, vf->attrs[attr].type, vf->attrs[attr].frac);
                 }
                 have_pos = 1;
+            } else if (attr == GX_VA_TEX0) {
+                uv[0] = read_direct_component(r, vf->attrs[attr].type, vf->attrs[attr].frac);
+                if (comp_cnt_count(attr, vf->attrs[attr].cnt) > 1)
+                    uv[1] = read_direct_component(r, vf->attrs[attr].type, vf->attrs[attr].frac);
             } else if (attr == GX_VA_CLR0) {
                 read_color(r, vf->attrs[attr].type, c);
             } else {
@@ -695,6 +773,7 @@ static void handle_draw(VkCommandBuffer cmd, reader_t* r, unsigned char cmd_byte
         if (have_pos) {
             memcpy(raw_pos[out_count], p, sizeof p);
             memcpy(raw_col[out_count], c, sizeof c);
+            memcpy(raw_uv[out_count], uv, sizeof uv);
             out_count++;
         }
     }
@@ -709,35 +788,35 @@ static void handle_draw(VkCommandBuffer cmd, reader_t* r, unsigned char cmd_byte
         unsigned int emitted = 0;
         if (prim == GX_TRIANGLES) {
             for (i = 0; i + 2 < out_count; i += 3) {
-                emit_vertex(&emitted, raw_pos[i], raw_col[i]);
-                emit_vertex(&emitted, raw_pos[i + 1], raw_col[i + 1]);
-                emit_vertex(&emitted, raw_pos[i + 2], raw_col[i + 2]);
+                emit_vertex(&emitted, raw_pos[i], raw_col[i], raw_uv[i]);
+                emit_vertex(&emitted, raw_pos[i + 1], raw_col[i + 1], raw_uv[i + 1]);
+                emit_vertex(&emitted, raw_pos[i + 2], raw_col[i + 2], raw_uv[i + 2]);
             }
         } else if (prim == GX_TRIANGLESTRIP) {
             for (i = 2; i < out_count; i++) {
                 if (i & 1) {
-                    emit_vertex(&emitted, raw_pos[i - 1], raw_col[i - 1]);
-                    emit_vertex(&emitted, raw_pos[i - 2], raw_col[i - 2]);
+                    emit_vertex(&emitted, raw_pos[i - 1], raw_col[i - 1], raw_uv[i - 1]);
+                    emit_vertex(&emitted, raw_pos[i - 2], raw_col[i - 2], raw_uv[i - 2]);
                 } else {
-                    emit_vertex(&emitted, raw_pos[i - 2], raw_col[i - 2]);
-                    emit_vertex(&emitted, raw_pos[i - 1], raw_col[i - 1]);
+                    emit_vertex(&emitted, raw_pos[i - 2], raw_col[i - 2], raw_uv[i - 2]);
+                    emit_vertex(&emitted, raw_pos[i - 1], raw_col[i - 1], raw_uv[i - 1]);
                 }
-                emit_vertex(&emitted, raw_pos[i], raw_col[i]);
+                emit_vertex(&emitted, raw_pos[i], raw_col[i], raw_uv[i]);
             }
         } else if (prim == GX_TRIANGLEFAN) {
             for (i = 2; i < out_count; i++) {
-                emit_vertex(&emitted, raw_pos[0], raw_col[0]);
-                emit_vertex(&emitted, raw_pos[i - 1], raw_col[i - 1]);
-                emit_vertex(&emitted, raw_pos[i], raw_col[i]);
+                emit_vertex(&emitted, raw_pos[0], raw_col[0], raw_uv[0]);
+                emit_vertex(&emitted, raw_pos[i - 1], raw_col[i - 1], raw_uv[i - 1]);
+                emit_vertex(&emitted, raw_pos[i], raw_col[i], raw_uv[i]);
             }
         } else if (prim == GX_QUADS) {
             for (i = 0; i + 3 < out_count; i += 4) {
-                emit_vertex(&emitted, raw_pos[i], raw_col[i]);
-                emit_vertex(&emitted, raw_pos[i + 1], raw_col[i + 1]);
-                emit_vertex(&emitted, raw_pos[i + 2], raw_col[i + 2]);
-                emit_vertex(&emitted, raw_pos[i + 2], raw_col[i + 2]);
-                emit_vertex(&emitted, raw_pos[i + 3], raw_col[i + 3]);
-                emit_vertex(&emitted, raw_pos[i], raw_col[i]);
+                emit_vertex(&emitted, raw_pos[i], raw_col[i], raw_uv[i]);
+                emit_vertex(&emitted, raw_pos[i + 1], raw_col[i + 1], raw_uv[i + 1]);
+                emit_vertex(&emitted, raw_pos[i + 2], raw_col[i + 2], raw_uv[i + 2]);
+                emit_vertex(&emitted, raw_pos[i + 2], raw_col[i + 2], raw_uv[i + 2]);
+                emit_vertex(&emitted, raw_pos[i + 3], raw_col[i + 3], raw_uv[i + 3]);
+                emit_vertex(&emitted, raw_pos[i], raw_col[i], raw_uv[i]);
             }
         } else {
             static int warned;
@@ -772,7 +851,7 @@ void pc_gx_fifo_exec(VkCommandBuffer cmd, const void* data, unsigned int nbytes)
             continue;
         }
         if (cmd_byte == GX_LOAD_BP_REG) {
-            rd_skip(&r, 4); /* TEV/blend state -- task 10 */
+            pc_gx_bp_write(rd_u32(&r));
             continue;
         }
         if (cmd_byte == GX_LOAD_CP_REG) {
