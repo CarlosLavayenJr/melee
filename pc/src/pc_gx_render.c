@@ -18,6 +18,7 @@
  */
 #include "pc_sys.h"
 #include "pc_vulkan.h"
+#include "pc_gx_texture.h"
 
 #include <dolphin/gx.h>
 
@@ -36,6 +37,10 @@ static VkCommandBuffer ensure_frame(void)
     if (frame_cmd == VK_NULL_HANDLE) {
         pc_vulkan_pump_events();
         frame_cmd = pc_vulkan_begin_frame();
+        if (frame_cmd != VK_NULL_HANDLE) {
+            /* begin_frame has waited for the previous frame's fence. */
+            pc_gx_textures_begin_frame();
+        }
     }
     return frame_cmd;
 }
@@ -90,7 +95,10 @@ void __wrap_GXCallDisplayList(void* list, u32 nbytes)
 void __real_GXLoadTexObj(GXTexObj* obj, GXTexMapID id);
 void __wrap_GXLoadTexObj(GXTexObj* obj, GXTexMapID id)
 {
-    ensure_frame();
+    _Static_assert(sizeof(GXTexObj) == 32, "texture bridge requires 32-bit GX ABI");
+    if (ensure_frame() != VK_NULL_HANDLE) {
+        pc_gx_texture_load_obj(obj, (unsigned)id);
+    }
     __real_GXLoadTexObj(obj, id);
 }
 

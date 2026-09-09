@@ -624,6 +624,8 @@ void pc_vulkan_end_frame(void)
 
 VkDevice pc_vulkan_device(void) { return device; }
 VkPhysicalDevice pc_vulkan_physical_device(void) { return phys_device; }
+VkQueue pc_vulkan_graphics_queue(void) { return graphics_queue; }
+unsigned pc_vulkan_graphics_family(void) { return graphics_family; }
 VkRenderPass pc_vulkan_render_pass(void) { return render_pass; }
 
 void pc_vulkan_extent(unsigned* width, unsigned* height)
