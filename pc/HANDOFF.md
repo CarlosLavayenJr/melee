@@ -1,24 +1,32 @@
 # Handoff — September 9, 2026 checkpoint
 
-## Current blocker: map collision data byte order, in stage loading
+## Current blocker: stage light list, in Ground_801C466C
 
-The particle bank blocker below is fixed and boot now runs further into the VS
-scene, from effect loading (gm_16AE.c:1992) to stage loading (gm_16AE.c:2007),
-where it segfaults:
+Four more schemas landed below and boot now runs deep into VS stage setup,
+stopping on an assert rather than a segfault:
 
 ```
-mpLibLoad (coll_data=0x812118d4) at src/melee/mp/mplib.c:920
-    joint->bounding_min.x = f31 * coll_data->joints[i].left_bound;
-  Ground_801C0800 (pair=0x886fdf4) ground.c:505
-  Stage_8022524C () stage.c:520
+HSD_ASSERT(3652, 0)  Ground_801C43C4 (arg0=Ground_803E069C) ground.c:2526
+  Ground_801C466C () ground.c:2726
+  Ground_801C0800 (pair) ground.c:508 -> Stage_8022524C () stage.c:520
   fn_8016E730(vs_enter_data) gm_16AE.c:2007 -> gm_Scene_Vs_OnEnter
 ```
 
-Same shape as every schema before it: the archive is converted, the collision
-data inside it is not. Read what mplib.c walks -- joint counts, bounds, vertex
-and line tables -- and write the schema against that, wrapped at mpLibLoad,
-guarded with pc_hsd_claim so it runs once and skips natively built data, and
-with every count checked through pc_hsd_in_archive before the walk follows it.
+Read it before writing another schema, because this one may not be one.
+`arg0` is `Ground_803E069C`, a natively declared `HSD_LightAnim[]` in
+ground.c, reached through the native fallback light list `Ground_803E06C8`.
+That fallback is only used when the stage's own lights are absent, so the
+first question is why `stage_info.map_plit` is null -- whether this stage's
+archive genuinely has no `map_plit` symbol, or whether something upstream is
+losing it. `Ground_801C43C4` then searches the shadow-entry array
+(`UnkStageDat::unk20`, count `unk24`) for that native pointer and asserts when
+it is missing, which it always will be for a native fallback.
+
+Note that `unk24` only became a real count with the map_head schema below;
+before that it was big-endian and this path was never reached. So confirm what
+`unk24` and `map_plit` actually hold on this stage before assuming the assert
+is a byte-order problem at all. `map_plit` is a `LightList**` and can be
+converted through the same symbol hook if it turns out to need it.
 
 ## What is verified this session
 
