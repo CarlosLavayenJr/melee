@@ -27,6 +27,7 @@
 #include <sysdolphin/baselib/cobj.h>
 #include <sysdolphin/baselib/pobj.h>
 #include <sysdolphin/baselib/jobj.h>
+#include <sysdolphin/baselib/wobj.h>
 
 static unsigned short swap16(unsigned short v)
 {
@@ -189,4 +190,11 @@ HSD_JObj* __wrap_HSD_JObjLoadJoint(HSD_Joint* joint)
        graph up front. Claiming before recursion also handles instance cycles. */
     swap_joint_tree(joint);
     return __real_HSD_JObjLoadJoint(joint);
+}
+
+void __real_HSD_WObjInit(HSD_WObj* wobj, HSD_WObjDesc* desc);
+void __wrap_HSD_WObjInit(HSD_WObj* wobj, HSD_WObjDesc* desc)
+{
+    if (desc && pc_hsd_claim(desc, sizeof *desc, PC_HSD_WOBJ)) swap_vec(&desc->pos);
+    __real_HSD_WObjInit(wobj, desc);
 }

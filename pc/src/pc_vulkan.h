@@ -32,6 +32,8 @@ VkCommandBuffer pc_vulkan_begin_frame(void);
    submits it, and presents. No-op if begin_frame returned VK_NULL_HANDLE
    this frame. */
 void pc_vulkan_end_frame(void);
+/* Diagnostic readback skips clear-only frames. */
+void pc_vulkan_mark_draw(void);
 
 /* State pc_gx_render.c needs to build pipelines against: the render pass
    frames are drawn into, and the current swapchain extent. */

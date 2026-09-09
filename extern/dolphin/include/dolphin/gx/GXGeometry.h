@@ -27,6 +27,10 @@ static inline void GXSetTexCoordGen(GXTexCoordID dst_coord, GXTexGenType func,
 void GXBegin(GXPrimitive type, GXVtxFmt vtxfmt, u16 nverts);
 static inline void GXEnd(void)
 {
+#if defined(PC_GX_RENDERER)
+    extern void pc_gx_immediate_end(void);
+    pc_gx_immediate_end();
+#endif
 #if DEBUG
     extern GXBool __GXinBegin;
     extern void OSPanic(char *file, int line, char *msg, ...);

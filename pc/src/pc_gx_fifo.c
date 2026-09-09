@@ -205,9 +205,9 @@ static unsigned int comp_type_size(GXAttr attr, unsigned char type)
 {
     if (attr == GX_VA_CLR0 || attr == GX_VA_CLR1) {
         switch (type) {
-        case 0: case 1: return 2; /* RGB565, RGBA4 */
-        case 2: case 4: return 3; /* RGB8, RGBA6 */
-        case 3: case 5: return 4; /* RGBX8, RGBA8 */
+        case GX_RGB565: case GX_RGBA4: return 2;
+        case GX_RGB8: case GX_RGBA6: return 3;
+        case GX_RGBX8: case GX_RGBA8: return 4;
         default: return 4;
         }
     }
@@ -249,6 +249,9 @@ typedef struct {
 
 #define PC_MAX_VERTS 65536
 static pc_vertex_t vertex_buf[PC_MAX_VERTS];
+static unsigned frame_vertices;
+
+void pc_gx_fifo_begin_frame(void) { frame_vertices = 0; }
 
 static void mtx_transform(const float m[3][4], const float in[3], float out[3])
 {
@@ -261,7 +264,7 @@ static void mtx_transform(const float m[3][4], const float in[3], float out[3])
 static void read_color(reader_t* r, unsigned char type, float out[4])
 {
     switch (type) {
-    case 2: { /* GX_RGB8 */
+    case GX_RGB8: {
         unsigned int r8 = rd_u8(r), g8 = rd_u8(r), b8 = rd_u8(r);
         out[0] = (float) r8 / 255.0f;
         out[1] = (float) g8 / 255.0f;
@@ -269,7 +272,7 @@ static void read_color(reader_t* r, unsigned char type, float out[4])
         out[3] = 1.0f;
         break;
     }
-    case 3: { /* GX_RGBX8 */
+    case GX_RGBX8: {
         unsigned int r8 = rd_u8(r), g8 = rd_u8(r), b8 = rd_u8(r);
         rd_u8(r);
         out[0] = (float) r8 / 255.0f;
@@ -278,7 +281,7 @@ static void read_color(reader_t* r, unsigned char type, float out[4])
         out[3] = 1.0f;
         break;
     }
-    case 5: { /* GX_RGBA8 */
+    case GX_RGBA8: {
         unsigned int r8 = rd_u8(r), g8 = rd_u8(r), b8 = rd_u8(r), a8 = rd_u8(r);
         out[0] = (float) r8 / 255.0f;
         out[1] = (float) g8 / 255.0f;
@@ -539,13 +542,21 @@ static void flush_draw(VkCommandBuffer cmd, unsigned int count)
     int r, c;
     VkDeviceSize offset = 0;
 
-    if (count == 0 || ensure_pipeline()) {
+    if (cmd == VK_NULL_HANDLE || count == 0 || ensure_pipeline()) {
         return;
     }
 
-    vkMapMemory(pc_vulkan_device(), vertex_vbo_mem, 0,
-               count * sizeof(pc_vertex_t), 0, &mapped);
-    memcpy(mapped, vertex_buf, count * sizeof(pc_vertex_t));
+    if (count > PC_MAX_VERTS - frame_vertices) {
+        pc_sys_log("pc_gx_fifo: per-frame vertex buffer exhausted; draw skipped\n");
+        return;
+    }
+    offset = (VkDeviceSize)frame_vertices * sizeof(pc_vertex_t);
+
+    if (vkMapMemory(pc_vulkan_device(), vertex_vbo_mem, 0,
+                    VK_WHOLE_SIZE, 0, &mapped) != VK_SUCCESS) {
+        pc_sys_log("pc_gx_fifo: vertex mapping failed\n"); return;
+    }
+    memcpy((unsigned char*)mapped + offset, vertex_buf, count * sizeof(pc_vertex_t));
     vkUnmapMemory(pc_vulkan_device(), vertex_vbo_mem);
 
     /* proj_mtx * [pos_mtx; 0 0 0 1], packed column-major for GLSL's mat4.
@@ -556,7 +567,9 @@ static void flush_draw(VkCommandBuffer cmd, unsigned int count)
        multiply without touching the shader. */
     for (c = 0; c < 4; c++) {
         for (r = 0; r < 4; r++) {
-            mvp[c * 4 + r] = proj_mtx[r][c];
+            /* GX clip depth is [-w,0]; Vulkan is [0,w]. Positive Vulkan
+               viewport height also reverses GX's upward screen Y. */
+            mvp[c * 4 + r] = (r == 1 || r == 2) ? -proj_mtx[r][c] : proj_mtx[r][c];
         }
     }
 
@@ -577,6 +590,16 @@ static void flush_draw(VkCommandBuffer cmd, unsigned int count)
                        sizeof mvp, mvp);
     vkCmdBindVertexBuffers(cmd, 0, 1, &vertex_vbo, &offset);
     vkCmdDraw(cmd, count, 1, 0, 0);
+    pc_vulkan_mark_draw();
+    frame_vertices += count;
+    {
+        static int reported;
+        if (!reported) {
+            reported = 1;
+            pc_sys_log("pc_gx_fifo: first real GX geometry recorded in Vulkan\n");
+            pc_sys_log("pc_gx_fifo: texture coordinates/TEV/depth state not applied by the basic pipeline\n");
+        }
+    }
 }
 
 /* ---- draw command decode --------------------------------------------------
@@ -617,11 +640,6 @@ static void handle_draw(VkCommandBuffer cmd, reader_t* r, unsigned char cmd_byte
     unsigned short i;
     unsigned int out_count = 0;
     GXAttr attr;
-
-    if (vtx_count > PC_MAX_VERTS) {
-        pc_sys_log("pc_gx_fifo: draw exceeds PC_MAX_VERTS, truncating\n");
-        vtx_count = PC_MAX_VERTS;
-    }
 
     for (i = 0; i < vtx_count && !r->overrun; i++) {
         float p[3] = {0, 0, 0};
@@ -807,5 +825,59 @@ void pc_gx_fifo_exec(VkCommandBuffer cmd, const void* data, unsigned int nbytes)
         pc_sys_log("pc_gx_fifo: unknown opcode; stopping this display "
                    "list rather than guess\n");
         return;
+    }
+}
+
+/* The game's release-mode GXPosition/GXColor/GXTexCoord helpers are inline
+   MMIO stores. Renderer-only header hooks serialize their native values to
+   the same big-endian command stream that display lists use. */
+#define PC_IMMEDIATE_BYTES (16u * 1024u * 1024u)
+static unsigned char immediate[PC_IMMEDIATE_BYTES];
+static unsigned immediate_size, immediate_expected;
+static VkCommandBuffer immediate_cmd;
+
+void pc_gx_immediate_end(void)
+{
+    if (immediate_expected) {
+        pc_sys_log("pc_gx_fifo: incomplete immediate primitive; discarded\n");
+        immediate_expected = 0;
+    }
+}
+
+void pc_gx_immediate_begin(VkCommandBuffer cmd, unsigned type, unsigned fmt, unsigned count)
+{
+    unsigned attr, stride = 0;
+    pc_gx_immediate_end();
+    if (fmt >= 8 || count > 65535 || !count) return;
+    for (attr = 0; attr <= GX_VA_TEX7; ++attr) {
+        switch (vtx_desc[attr]) {
+        case GX_DIRECT: stride += attr_direct_size((GXAttr)attr, &vtx_fmt[fmt]); break;
+        case GX_INDEX8: ++stride; break;
+        case GX_INDEX16: stride += 2; break;
+        }
+    }
+    if (!stride || count > (PC_IMMEDIATE_BYTES - 3) / stride) {
+        pc_sys_log("pc_gx_fifo: invalid or oversized immediate format\n"); return;
+    }
+    immediate_cmd = cmd;
+    immediate[0] = (unsigned char)(type | fmt);
+    immediate[1] = (unsigned char)(count >> 8); immediate[2] = (unsigned char)count;
+    immediate_size = 3; immediate_expected = 3 + count * stride;
+}
+
+void pc_gx_immediate_write(const void* value, unsigned size)
+{
+    unsigned bits = 0, i;
+    if (!immediate_expected) return;
+    if ((size != 1 && size != 2 && size != 4) || size > immediate_expected - immediate_size) {
+        pc_sys_log("pc_gx_fifo: immediate write exceeds primitive; discarded\n");
+        immediate_expected = 0; return;
+    }
+    memcpy(&bits, value, size);
+    for (i = 0; i < size; ++i)
+        immediate[immediate_size++] = (unsigned char)(bits >> (8 * (size - i - 1)));
+    if (immediate_size == immediate_expected) {
+        immediate_expected = 0;
+        pc_gx_fifo_exec(immediate_cmd, immediate, immediate_size);
     }
 }

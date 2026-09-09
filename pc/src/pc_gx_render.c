@@ -24,6 +24,9 @@
 
 static int window_ready;
 static VkCommandBuffer frame_cmd = VK_NULL_HANDLE;
+extern void pc_gx_fifo_begin_frame(void);
+extern void pc_gx_immediate_begin(VkCommandBuffer cmd, unsigned type,
+                                  unsigned fmt, unsigned count);
 
 /* Lazily opens the Vulkan frame the first draw-shaped call needs one for,
    and reused by every wrapper below rather than each managing its own
@@ -40,6 +43,7 @@ static VkCommandBuffer ensure_frame(void)
         if (frame_cmd != VK_NULL_HANDLE) {
             /* begin_frame has waited for the previous frame's fence. */
             pc_gx_textures_begin_frame();
+            pc_gx_fifo_begin_frame();
         }
     }
     return frame_cmd;
@@ -74,11 +78,9 @@ void __wrap_GXSetCopyClear(GXColor clear_clr, u32 clear_z)
 void __real_GXBegin(GXPrimitive type, GXVtxFmt vtxfmt, u16 nverts);
 void __wrap_GXBegin(GXPrimitive type, GXVtxFmt vtxfmt, u16 nverts)
 {
-    ensure_frame();
-    /* Geometry submission is milestone 3 (pc/GX_RENDERER.md); for now the
-       frame this call belongs to still opens, clears, and presents, same as
-       every other frame, just without this primitive drawn into it. */
+    VkCommandBuffer cmd = ensure_frame();
     __real_GXBegin(type, vtxfmt, nverts);
+    pc_gx_immediate_begin(cmd, (unsigned)type, (unsigned)vtxfmt, nverts);
 }
 
 extern void pc_gx_fifo_exec(VkCommandBuffer cmd, const void* data,

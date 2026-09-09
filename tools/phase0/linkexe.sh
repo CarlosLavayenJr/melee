@@ -83,6 +83,9 @@ CFLAGS="$CFLAGS -Wno-error=incompatible-pointer-types"
 if [ "$TRACE_DVD" = 1 ]; then
   CFLAGS="$CFLAGS -DPC_DVD_TRACE"
 fi
+if [ "$RENDERER" = 1 ]; then
+  CFLAGS="$CFLAGS -DPC_GX_RENDERER"
+fi
 LDFLAGS="-lm"
 FREESTANDING=0
 STUBFLAGS=""
@@ -146,7 +149,9 @@ if [ "$BITS" = "-m32" ]; then
     INCLUDES_PC="-I pc/src -I src -I extern/dolphin/include"
     INCLUDES_PC="$INCLUDES_PC -idirafter extern/dolphin/include/libc -I extern/dolphin/src"
     # MSL's implementations still duplicate msvcrt's, so those sources go.
-    EXCLUDE_HOSTLIBC="src/MSL/(ctype|string|mem|mem_funcs|float|errno|rand|misc_io|abort_exit|uart_console_io|mbstring|math_data)\\.c|"
+    # float.c and math_data.c are MSL-private tables, not host libc symbols.
+    # Excluding them silently replaced masks/polynomials with zeroed stubs.
+    EXCLUDE_HOSTLIBC="src/MSL/(ctype|string|mem|mem_funcs|errno|rand|misc_io|abort_exit|uart_console_io|mbstring)\\.c|"
   elif ! echo 'int main(void){return 0;}' | "$CC" -m32 -x c -o /dev/null - 2>/dev/null; then
     echo "note: no 32-bit libc; linking freestanding (-nostdlib)"
     FREESTANDING=1
@@ -193,7 +198,7 @@ for d in $(find extern/dolphin/src -type d); do INCLUDES="$INCLUDES -I $d"; done
 # would ever deliver.
 LDFLAGS="$LDFLAGS -Wl,--wrap=HSD_CObjInit -Wl,--wrap=HSD_CObjLoadDesc -Wl,--wrap=HSD_PadGetRawQueueCount -Wl,--wrap=HSD_PObjLoadDesc"
 LDFLAGS="$LDFLAGS -Wl,--wrap=GXSetDrawDone -Wl,--wrap=GXDrawDone"
-LDFLAGS="$LDFLAGS -Wl,--wrap=HSD_JObjLoadJoint"
+LDFLAGS="$LDFLAGS -Wl,--wrap=HSD_JObjLoadJoint -Wl,--wrap=HSD_WObjInit"
 
 WRAPPED="GXBegin GXCallDisplayList GXLoadTexObj GXSetTevOrder GXSetProjection GXLoadPosMtxImm GXCopyDisp"
 # pc_gx_trace.c implements only the list above. pc_gx_render.c implements

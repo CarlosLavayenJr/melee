@@ -19,6 +19,7 @@
 extern void pc_memory_init(void);
 extern void pc_bootinfo_init(void);
 extern int pc_dvd_mount(void);
+extern void __sinit_trigf_c(void);
 
 void pc_init_all(void)
 {
@@ -31,6 +32,9 @@ void pc_init_all(void)
     pc_memory_init();
     pc_bootinfo_init();
     pc_dvd_mount();
+    /* MWCC .ctors is empty on the host (SECTION_CTORS expands to nothing).
+       The retained MSL trig implementation needs its range-reduction data. */
+    __sinit_trigf_c();
 }
 
 #if !(defined(__i386__) && defined(PC_FREESTANDING))

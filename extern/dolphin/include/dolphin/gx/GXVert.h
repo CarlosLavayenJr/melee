@@ -44,23 +44,33 @@ volatile PPCWGPipe GXWGFifo : GXFIFO_ADDR;
 
 // inline functions
 
+/* Native renderer only: capture the typed vertex writes before preserving
+   the SDK's mapped FIFO write. Console and headless builds are unchanged. */
+#if defined(PC_GX_RENDERER)
+void pc_gx_immediate_write(const void* value, unsigned size);
+#define GX_HOST_WRITE(T, value) do { T gx_value_ = (value); \
+    pc_gx_immediate_write(&gx_value_, sizeof(gx_value_)); GXWGFifo.T = gx_value_; } while (0)
+#else
+#define GX_HOST_WRITE(T, value) do { GXWGFifo.T = (value); } while (0)
+#endif
+
 #define FUNC_1PARAM(name, T) \
-static inline void name##1##T(T x) { GXWGFifo.T = x; }
+static inline void name##1##T(T x) { GX_HOST_WRITE(T, x); }
 
 #define FUNC_2PARAM(name, T) \
-static inline void name##2##T(T x, T y) { GXWGFifo.T = x; GXWGFifo.T = y; }
+static inline void name##2##T(T x, T y) { GX_HOST_WRITE(T, x); GX_HOST_WRITE(T, y); }
 
 #define FUNC_3PARAM(name, T) \
-static inline void name##3##T(T x, T y, T z) { GXWGFifo.T = x; GXWGFifo.T = y; GXWGFifo.T = z; }
+static inline void name##3##T(T x, T y, T z) { GX_HOST_WRITE(T, x); GX_HOST_WRITE(T, y); GX_HOST_WRITE(T, z); }
 
 #define FUNC_4PARAM(name, T) \
-static inline void name##4##T(T x, T y, T z, T w) { GXWGFifo.T = x; GXWGFifo.T = y; GXWGFifo.T = z; GXWGFifo.T = w; }
+static inline void name##4##T(T x, T y, T z, T w) { GX_HOST_WRITE(T, x); GX_HOST_WRITE(T, y); GX_HOST_WRITE(T, z); GX_HOST_WRITE(T, w); }
 
 #define FUNC_INDEX8(name) \
-static inline void name##1x8(u8 x) { GXWGFifo.u8 = x; }
+static inline void name##1x8(u8 x) { GX_HOST_WRITE(u8, x); }
 
 #define FUNC_INDEX16(name) \
-static inline void name##1x16(u16 x) { GXWGFifo.u16 = x; }
+static inline void name##1x16(u16 x) { GX_HOST_WRITE(u16, x); }
 
 #endif
 

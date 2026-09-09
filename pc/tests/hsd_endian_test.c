@@ -6,6 +6,7 @@
 #include <sysdolphin/baselib/pobj.h>
 #include <sysdolphin/baselib/cobj.h>
 #include <sysdolphin/baselib/jobj.h>
+#include <sysdolphin/baselib/wobj.h>
 
 void pc_sys_log(const char* s) { fputs(s, stderr); }
 void __real_HSD_CObjInit(HSD_CObj* c, HSD_CObjDesc* d) { (void)c; (void)d; }
@@ -14,6 +15,8 @@ HSD_PObj* __real_HSD_PObjLoadDesc(HSD_PObjDesc* d) { return (HSD_PObj*)d; }
 HSD_PObj* __wrap_HSD_PObjLoadDesc(HSD_PObjDesc* d);
 HSD_JObj* __real_HSD_JObjLoadJoint(HSD_Joint* j) { return (HSD_JObj*)j; }
 HSD_JObj* __wrap_HSD_JObjLoadJoint(HSD_Joint* j);
+void __real_HSD_WObjInit(HSD_WObj* w, HSD_WObjDesc* d) { (void)w; (void)d; }
+void __wrap_HSD_WObjInit(HSD_WObj* w, HSD_WObjDesc* d);
 
 int main(void)
 {
@@ -55,6 +58,14 @@ int main(void)
         __wrap_HSD_JObjLoadJoint(j);
         assert(j->flags == 0x20000008 && j->scale.x == 1.0f && j->scale.y == 1.0f);
         __wrap_HSD_JObjLoadJoint(j); assert(j->scale.x == 1.0f);
+    }
+    {
+        HSD_WObjDesc* w = (void*)(block+1536);
+        memcpy(&w->pos.x, &weight, 4);
+        __wrap_HSD_WObjInit(NULL, w);
+        assert(w->pos.x == 1.0f);
+        __wrap_HSD_WObjInit(NULL, w);
+        assert(w->pos.x == 1.0f);
     }
     __wrap_HSD_PObjLoadDesc(p); __wrap_HSD_PObjLoadDesc(next);
     assert(p->flags == 0xa001 && env->weight == 1.0f && v[0].stride == 12);

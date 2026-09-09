@@ -48,6 +48,114 @@ static VkFence fence_in_flight;
 static VkClearValue clear_value;
 static int frame_active;
 static int swapchain_dirty;
+static int can_capture;
+static unsigned presented_frames;
+static int frame_has_draws, capture_attempted;
+static VkBuffer capture_buffer;
+static VkDeviceMemory capture_memory;
+static char capture_path[1024];
+
+/* Optional framebuffer readback for headless visual QA. Enabled only by
+   PC_CAPTURE_FRAME=<path.bmp>; captures the first frame containing a draw.
+   This reads the application's own Vulkan image, not the desktop screen. */
+static void capture_record(void)
+{
+    VkBufferCreateInfo b = {0};
+    VkMemoryAllocateInfo a = {0};
+    VkMemoryRequirements req;
+    VkPhysicalDeviceMemoryProperties props;
+    VkImageMemoryBarrier barrier = {0};
+    VkBufferImageCopy region = {0};
+    VkBufferMemoryBarrier host = {0};
+    unsigned i;
+    if (!can_capture || !frame_has_draws || capture_attempted ||
+        !GetEnvironmentVariableA("PC_CAPTURE_FRAME", capture_path, sizeof capture_path)) return;
+    capture_attempted = 1;
+    if (swapchain_format != VK_FORMAT_B8G8R8A8_UNORM && swapchain_format != VK_FORMAT_R8G8B8A8_UNORM) return;
+    b.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    b.size = (VkDeviceSize)swapchain_extent.width * swapchain_extent.height * 4;
+    b.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    if (vkCreateBuffer(device, &b, NULL, &capture_buffer) != VK_SUCCESS) return;
+    vkGetBufferMemoryRequirements(device, capture_buffer, &req);
+    vkGetPhysicalDeviceMemoryProperties(phys_device, &props);
+    for (i = 0; i < props.memoryTypeCount; ++i)
+        if ((req.memoryTypeBits & (1u << i)) && (props.memoryTypes[i].propertyFlags &
+             (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) ==
+             (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) break;
+    if (i == props.memoryTypeCount) goto failed;
+    a.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    a.allocationSize = req.size; a.memoryTypeIndex = i;
+    if (vkAllocateMemory(device, &a, NULL, &capture_memory) != VK_SUCCESS) goto failed;
+    if (vkBindBufferMemory(device, capture_buffer, capture_memory, 0) != VK_SUCCESS) goto failed;
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = swapchain_images[current_image_index];
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.levelCount = barrier.subresourceRange.layerCount = 1;
+    vkCmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.layerCount = 1;
+    region.imageExtent.width = swapchain_extent.width;
+    region.imageExtent.height = swapchain_extent.height; region.imageExtent.depth = 1;
+    vkCmdCopyImageToBuffer(command_buffer, barrier.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           capture_buffer, 1, &region);
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT; barrier.dstAccessMask = 0;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    vkCmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
+    host.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+    host.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; host.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+    host.srcQueueFamilyIndex = host.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    host.buffer = capture_buffer; host.size = VK_WHOLE_SIZE;
+    vkCmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_HOST_BIT, 0, 0, NULL, 1, &host, 0, NULL);
+    return;
+failed:
+    if (capture_buffer) vkDestroyBuffer(device, capture_buffer, NULL);
+    if (capture_memory) vkFreeMemory(device, capture_memory, NULL);
+    capture_buffer = VK_NULL_HANDLE; capture_memory = VK_NULL_HANDLE;
+    pc_sys_log("pc_vulkan: capture allocation failed\n");
+}
+
+static void capture_finish(void)
+{
+    unsigned char* pixels;
+    unsigned size = swapchain_extent.width * swapchain_extent.height * 4, i;
+    BITMAPFILEHEADER file_header = {0};
+    BITMAPINFOHEADER info = {0};
+    HANDLE file;
+    DWORD written;
+    if (!capture_buffer) return;
+    if (vkQueueWaitIdle(graphics_queue) == VK_SUCCESS &&
+        vkMapMemory(device, capture_memory, 0, size, 0, (void**)&pixels) == VK_SUCCESS) {
+        if (swapchain_format == VK_FORMAT_R8G8B8A8_UNORM)
+            for (i = 0; i < size; i += 4) { unsigned char c = pixels[i]; pixels[i] = pixels[i+2]; pixels[i+2] = c; }
+        file_header.bfType = 0x4d42; file_header.bfOffBits = sizeof file_header + sizeof info;
+        file_header.bfSize = file_header.bfOffBits + size;
+        info.biSize = sizeof info; info.biWidth = swapchain_extent.width;
+        info.biHeight = -(LONG)swapchain_extent.height; info.biPlanes = 1; info.biBitCount = 32;
+        info.biSizeImage = size;
+        /* Game MSL stdio symbols coexist with the host CRT: use Win32 I/O. */
+        file = CreateFileA(capture_path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL, NULL);
+        if (file != INVALID_HANDLE_VALUE) {
+            int ok = WriteFile(file, &file_header, sizeof file_header, &written, NULL) && written == sizeof file_header &&
+                     WriteFile(file, &info, sizeof info, &written, NULL) && written == sizeof info &&
+                     WriteFile(file, pixels, size, &written, NULL) && written == size;
+            if (!CloseHandle(file)) ok = 0;
+            pc_sys_log(ok ? "pc_vulkan: frame capture saved\n" : "pc_vulkan: frame capture write failed\n");
+        } else pc_sys_log("pc_vulkan: cannot open capture path\n");
+        vkUnmapMemory(device, capture_memory);
+    }
+    vkDestroyBuffer(device, capture_buffer, NULL); vkFreeMemory(device, capture_memory, NULL);
+    capture_buffer = VK_NULL_HANDLE; capture_memory = VK_NULL_HANDLE;
+}
 
 /* ---- failure reporting -----------------------------------------------
  * A GX call the renderer does not understand yet fails loud (pc/GX_RENDERER.md);
@@ -382,6 +490,10 @@ static int create_swapchain(void)
     ci.imageExtent = swapchain_extent;
     ci.imageArrayLayers = 1;
     ci.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    can_capture = (caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0;
+    if (can_capture && GetEnvironmentVariableA("PC_CAPTURE_FRAME", capture_path, sizeof capture_path))
+        ci.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    else can_capture = 0;
     ci.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
     ci.preTransform = caps.currentTransform;
     ci.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
@@ -577,8 +689,11 @@ VkCommandBuffer pc_vulkan_begin_frame(void)
     vkCmdBeginRenderPass(command_buffer, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
 
     frame_active = 1;
+    frame_has_draws = 0;
     return command_buffer;
 }
+
+void pc_vulkan_mark_draw(void) { frame_has_draws = 1; }
 
 void pc_vulkan_end_frame(void)
 {
@@ -594,6 +709,7 @@ void pc_vulkan_end_frame(void)
     frame_active = 0;
 
     vkCmdEndRenderPass(command_buffer);
+    capture_record();
     vkEndCommandBuffer(command_buffer);
 
     ZeroMemory(&si, sizeof(si));
@@ -606,6 +722,8 @@ void pc_vulkan_end_frame(void)
     si.signalSemaphoreCount = 1;
     si.pSignalSemaphores = &sem_render_finished;
     vkQueueSubmit(graphics_queue, 1, &si, fence_in_flight);
+    capture_finish();
+    ++presented_frames;
 
     ZeroMemory(&pi, sizeof(pi));
     pi.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;

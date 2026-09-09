@@ -1,4 +1,89 @@
-# Handoff — native renderer milestone
+# Handoff — September 9, 2026 checkpoint
+
+Checkout: `C:\Users\Owner\melee`, branch `claude/sync-branch-update-pr033u`.
+The texture branch `codex/gx-texture-upload` was merged in `08c5ba7b7`.
+The older handoff below is retained as history, **not current blocker/status**.
+
+## Current evidence
+
+- Native Windows EXE initializes Vulkan and reaches the memory-card menu loop.
+  The former unresolved-joint assertion and subsequent GX finish wait are fixed.
+- Real menu GX immediate geometry now reaches Vulkan. Application framebuffer
+  readback was visually inspected: white glyph-sized rectangles on black. These
+  are game-issued geometry, **not legible text, a correct menu, or gameplay**.
+- At the fourth frame-end breakpoint, three frames had been submitted and the
+  current frame contained 162 expanded vertices. Stack:
+  `HSD_VICopyXFBAsync -> gm_801A4D34 -> runGameMode`.
+- Texture CPU decode and Vulkan upload/readback tests pass for I4/I8/IA4/IA8,
+  RGB565/RGB5A3/RGBA8/CMPR, four mip levels, cache and rebinding lifetime.
+  The Vulkan validation layer was unavailable; do not claim a validation pass.
+- The basic shader still uses position/color only. Texture upload is implemented
+  but texture sampling/TEV/depth state are not. First draw logs this limitation.
+- No gameplay, audio, or correct textured rendering has been verified.
+
+## Changes since the previous handoff
+
+`6db4637ea`: tiled texture decoders, immutable Vulkan image uploads/cache/samplers,
+tests, `pc/TEXTURES.md`, MIT reference license under `pc/licenses`.
+
+`7b5c87fc5`: archive-provenance/once-per-schema endian conversion for PObj chains,
+vertex metadata, envelope weights, joint trees and matrices. The missing joint
+was a misread union: observed flags `0x01a0` swap to `0xa001` (envelope), with an
+envelope pointer array at the supposed joint address. Relocated pointers must
+NOT be swapped again. The next stall was GXWaitDrawDone; native completion now
+waits for the real Vulkan queue and delivers SDK interrupt 19, preserving the
+SDK FinishQueue/callback mechanism.
+
+Latest checkpoint:
+
+- Renderer-only hooks capture release GX inline vertex MMIO stores and feed
+  their actual values into the shared display-list decoder.
+- Draws use separate vertex-buffer ranges until the frame fence, so later
+  uploads cannot overwrite earlier queued geometry.
+- Corrected color enums and GX-to-Vulkan clip-space conversion; converted
+  archive WObj camera positions once.
+- Restored existing MSL float/math tables to the Windows build and called the
+  retained trig initializer. Excluding them had created zero-filled stubs,
+  collapsing geometry and producing NaN projection values. Projection is now
+  finite, and real first-quad positions span approximately (-13.921, 9, -64)
+  to (-11.393, 6.472, -64).
+- Optional application-only GPU readback:
+  `PC_CAPTURE_FRAME=build/phase2/first-frame.bmp ./build/phase2/melee_host.exe`
+  from repo root in MSYS2. Captures the first frame containing a draw, skipping
+  clear-only frames. Uses Win32 I/O to avoid game MSL/host CRT stdio conflicts.
+  Do not commit captures or other game data. Full builds recreate build/phase2.
+
+## Next work
+
+1. Preserve texture coordinates in decoded vertices and bind uploaded images
+   and samplers to shaders. Implement the GX/TEV state actually issued by the
+   menu, not a hardcoded appearance or mock visuals.
+2. Resolve `GXLoadTexObj: source outside RAM`: native font symbols currently use
+   placeholder data when generated headers are absent, and GX packed physical
+   addresses cannot round-trip arbitrary host pointers. Load required font data
+   from the user's disc at runtime and retain valid pointer mappings; never
+   commit extracted assets.
+3. Implement viewport/scissor, blend/alpha/depth/cull, matrix/texgen and broader
+   TEV support with tests and actual frame checks. Keep unsupported cases loud.
+4. Audit remaining material/image/animation descriptor byte order and provenance
+   invalidation on freed/reused archive memory. One menu loop does not establish
+   that all game modes work.
+
+Build invocation and constraints below still apply. Use mandatory `-m32`; run
+from repo root. Never run two linkexe builds against this checkout at once.
+A timeout in the menu loop is not by itself a boot failure: inspect logs and
+backtrace. Do not trust stale incremental object lists after source inclusion
+changes. No recompilation/emulation runtime is permitted.
+
+Tests: `pc/tests/run_texture_tests.ps1 -Gpu`, plus standalone
+`pc/tests/hsd_endian_test.c` (link pc_hsd_endian.c, pc_hsd_swap.c and
+`--large-address-aware`) and `pc/tests/gx_immediate_test.c` (link Vulkan).
+Use 32-bit GCC, normal game include paths, `-fgnu89-inline`, and compat.h.
+Synthetic decoder tests do not substitute visuals in the running game.
+
+---
+
+# Historical handoff — superseded status below
 
 Branch: `claude/sync-branch-update-pr033u` · last commit `a276d7fbd`
 
