@@ -25,8 +25,12 @@ void pc_stage_head_to_native(UnkStageDat* d);
 void pc_ground_param_to_native(GroundParam* p);
 void pc_stage_itemdata_to_native(struct GroundItemData** t);
 void pc_sys_log(const char* s) { fputs(s, stderr); }
+static void *public_result, *seen_cmd, *seen_tex;
 void* __real_HSD_ArchiveGetPublicAddress(HSD_Archive* a, const char* s)
-{ (void) a; (void) s; return NULL; }
+{ (void) a; (void) s; return public_result; }
+void* __wrap_HSD_ArchiveGetPublicAddress(HSD_Archive*, const char*);
+void pc_hsd_particle_banks_to_native(void* cmd, void* tex, void* form)
+{ seen_cmd=cmd; seen_tex=tex; assert(!form); }
 
 static void be32(void* p, unsigned v)
 {
@@ -344,6 +348,13 @@ int main(void)
                                         MEM_RESERVE | MEM_COMMIT,
                                         PAGE_READWRITE);
     assert(block == (void*) 0x81000000u);
+
+    public_result = block;
+    assert(__wrap_HSD_ArchiveGetPublicAddress(NULL, "map_ptcl") == block);
+    assert(seen_cmd == block && !seen_tex);
+    assert(__wrap_HSD_ArchiveGetPublicAddress(NULL, "map_texg") == block);
+    assert(!seen_cmd && seen_tex == block);
+    public_result = NULL;
 
     test_converts(block);
     test_converts_once(block);

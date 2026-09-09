@@ -9,6 +9,13 @@
 /* One byte per aligned word. 0=not archive, 0x80=unclaimed archive word,
    1..127=schema at this address. CPU vertex/texture payload stays untouched. */
 static unsigned char words[RAM_BYTES / 4];
+static void log_hex(unsigned value)
+{
+    char out[11] = "0x00000000";
+    static const char digits[] = "0123456789abcdef";
+    for (unsigned i = 0; i < 8; ++i) out[9-i] = digits[(value >> (4*i)) & 15];
+    pc_sys_log(out);
+}
 
 void pc_hsd_forget_range(void* data, size_t size)
 {
@@ -57,5 +64,18 @@ int pc_hsd_claim(void* data, size_t size, unsigned kind)
     return 1;
 invalid:
     pc_sys_log("pc_hsd_endian: descriptor outside archive or conflicting schema\n");
+    pc_sys_log("  address="); log_hex((unsigned)p);
+    pc_sys_log(" requested="); log_hex(kind);
+    pc_sys_log(" previous="); log_hex(words[first]); pc_sys_log("\n");
     abort();
+}
+
+void pc_hsd_mobj_flags_to_native(void* flags)
+{
+    uint32_t value;
+    if (!pc_hsd_claim(flags, sizeof value, PC_HSD_MOBJ_FLAGS)) return;
+    memcpy(&value, flags, sizeof value);
+    value = (value >> 24) | ((value >> 8) & 0xff00u) |
+            ((value << 8) & 0xff0000u) | (value << 24);
+    memcpy(flags, &value, sizeof value);
 }

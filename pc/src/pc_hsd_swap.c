@@ -298,7 +298,7 @@ HSD_MObj* __real_HSD_MObjLoadDesc(HSD_MObjDesc* desc);
 HSD_MObj* __wrap_HSD_MObjLoadDesc(HSD_MObjDesc* desc)
 {
     if (desc && pc_hsd_claim(desc, sizeof *desc, PC_HSD_MOBJ)) {
-        desc->rendermode = swap32(desc->rendermode);
+        pc_hsd_mobj_flags_to_native(&desc->rendermode);
         /* DObjLoad switches on exactly these three; a fourth value is what
            the unconverted descriptor produced, so a fourth value here means
            the conversion did not fix it. */

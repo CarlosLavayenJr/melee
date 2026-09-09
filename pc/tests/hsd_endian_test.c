@@ -11,6 +11,10 @@
 #include <sysdolphin/baselib/tobj.h>
 
 void pc_sys_log(const char* s) { fputs(s, stderr); }
+int __real_HSD_ArchiveParse(void* a, void* s, size_t n)
+{ (void)a; (void)s; (void)n; return 0; }
+int __real_lbArchiveRelocate(void* a, void* s, size_t n, intptr_t base)
+{ (void)a; (void)s; (void)n; (void)base; return 0; }
 void __real_HSD_CObjInit(HSD_CObj* c, HSD_CObjDesc* d) { (void)c; (void)d; }
 HSD_CObj* __real_HSD_CObjLoadDesc(HSD_CObjDesc* d) { (void)d; return NULL; }
 HSD_PObj* __real_HSD_PObjLoadDesc(HSD_PObjDesc* d) { return (HSD_PObj*)d; }
@@ -129,6 +133,21 @@ int main(void)
         __wrap_HSD_TObjLoadDesc(t);
         assert(m->rendermode == 0x60100031 && img->width == 640);
         assert(t->id == GX_TEXMAP2 && tev->active == 0x80000000);
+    }
+    {
+        HSD_MObjDesc* stage_first = (void*)(block+3520);
+        HSD_MObjDesc* material_first = (void*)(block+3552);
+        memset(stage_first, 0, sizeof *stage_first);
+        memset(material_first, 0, sizeof *material_first);
+        stage_first->rendermode = material_first->rendermode = 0x31001060;
+        pc_hsd_mobj_flags_to_native(&stage_first->rendermode);
+        stage_first->rendermode |= 0x04000000; /* grDatFiles_801C6228 mutation */
+        __wrap_HSD_MObjLoadDesc(stage_first);
+        assert(stage_first->rendermode == 0x64100031);
+        __wrap_HSD_MObjLoadDesc(material_first);
+        material_first->rendermode |= 0x04000000;
+        pc_hsd_mobj_flags_to_native(&material_first->rendermode);
+        assert(material_first->rendermode == 0x64100031);
     }
     __wrap_HSD_PObjLoadDesc(p); __wrap_HSD_PObjLoadDesc(next);
     assert(p->flags == 0xa001 && env->weight == 1.0f && v[0].stride == 12);

@@ -136,6 +136,19 @@ typedef struct StageCallbacks {
     /* +10 */ union {
         /* +10 */ u32 flags;
         struct {
+#ifdef PC_GX_RENDERER
+            /* Native tables initialize the numerical u32 mask (e.g. C0000000),
+               not console-order bytes. Keep bitfield aliases on bits 31..24. */
+            u32 : 24;
+            u32 flags_b7 : 1;
+            u32 flags_b6 : 1;
+            u32 flags_b5 : 1;
+            u32 flags_b4 : 1;
+            u32 flags_b3 : 1;
+            u32 flags_b2 : 1;
+            u32 flags_b1 : 1;
+            u32 flags_b0 : 1;
+#else
             /* +10:0 */ u8 flags_b0 : 1;
             /* +10:1 */ u8 flags_b1 : 1;
             /* +10:2 */ u8 flags_b2 : 1;
@@ -144,6 +157,7 @@ typedef struct StageCallbacks {
             /* +10:5 */ u8 flags_b5 : 1;
             /* +10:6 */ u8 flags_b6 : 1;
             /* +10:7 */ u8 flags_b7 : 1;
+#endif
         };
     };
 } StageCallbacks;

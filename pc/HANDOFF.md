@@ -1,6 +1,102 @@
 # Handoff — September 9, 2026 checkpoint
 
-## Current state: two known stops in VS stage setup, plus one open question
+## Latest checkpoint: stage fixes; main menu entry crashes in light selection
+
+This section supersedes the historical checkpoints below. Full opening-movie
+playback was already working before this session; no movie decoder or renderer
+runtime code was changed here. A fresh no-skip regression run reached movie frame
+1000 in `lbMthp_8001F67C` / `__wrap_GXInitTexObj`, without an assert or crash,
+then ended at an intentional debugger breakpoint. That is a bounded regression
+check, not a new full-movie-completion claim.
+
+### Changes in this checkpoint
+
+- Fixed the native `StageCallbacks` flags aliases under `PC_GX_RENDERER`.
+  Tables initialize a numerical u32 mask such as `0xc0000000`, but the old
+  byte bitfields read the wrong bits on little-endian GCC. `flags_b0/b1` now
+  map to bits 31/30, preserving the 20-byte structure and offset-16 flags.
+  Ground now selects the archive light entry instead of the native fallback
+  that caused the `ground.c:2526` assert. Console declarations are unchanged.
+- Restored `map_ptcl` / `map_texg` conversion through the public-symbol hook.
+  Preloaded stage archives call `psInitDataBankLoad` without Locate, so those
+  banks need conversion before the public pointer reaches the caller. Existing
+  provenance bookkeeping prevents double conversion on the normal Locate path.
+- Diagnosed the conflicting-schema abort independently of the particle change.
+  Kongo and Corneria requested `PC_HSD_MOBJ` (6) at an address previously marked
+  `PC_HSD_STAGEENTRY` (22). `UnkStageDat::unk28` entries are shallow views of
+  material descriptors: `unk4` aliases `HSD_MObjDesc::rendermode`. Stage setup
+  converts and modifies that word before MObj loading. Both consumers now use
+  one field-level `PC_HSD_MOBJ_FLAGS` claim, preserving the stage mutation and
+  preventing a second swap. The full descriptor still gets its normal MObj
+  claim; conflicting-schema rejection has NOT been weakened. Diagnostics now
+  report the address and both schema kinds.
+- Added flag-layout and both-material-load-order regression tests, public-symbol
+  dispatch checks, and integrated stage/archive/particle/endian tests into
+  `pc/tests/run_renderer_tests.ps1`.
+
+### Priority blocker: actual main menu, not the attract-mode match
+
+The title screen accepts **Start**, mapped to **Enter**, for the normal menu.
+J maps to A: it can skip the opening, but at retail DbLevel 0 it does not enter
+the normal menu from the title. Without Start, the title times out into the
+attract-mode demo. Previous stage tests intentionally pressed A after movie
+frame 10 to reach this demo quickly; this was the reason the user saw the
+movie disappear, not evidence of a playback regression. Announce deliberate
+skips and debugger stops before launching visible tests.
+
+A targeted PADRead test sent Start pulses after title entry, through the game's
+normal input path (no scene override). It reached `mnMain_Scene_OnEnter`, then:
+
+```
+SIGSEGV mn_8022C068(lobj=NULL, unused=0, div=0) mnmain.c:1789
+  while (!(lobj->flags & LOBJ_POINT))
+  mn_8022DDA8_inline -> mnMain_Scene_OnEnter (mnmain.c:2939)
+  gm_801A4014 -> runGameMode(mode_kind=1) -> main
+```
+
+The point-light search reaches NULL. Next inspect `MenMain_lights`,
+`lb_80011AC4`, and `HSD_LObjLoadDesc`: distinguish an empty list from incorrect
+descriptor flags or a missing expected point light. No fix for this crash is
+implemented or verified yet; do not hide it with a null guard. Menu rendering
+also remains unverified. Runtime diagnostics still report unsupported depth,
+texgen/texture formats, blending, and more-than-four-TEV-stage configurations.
+
+### Separate, later attract-mode stage stops
+
+With all three stage fixes above, Castle reached `grCastle_801CD658` and stopped
+in `lb_8000FD48(jobj=NULL, max_count=100663296)` at `lb_00F9.c:171`, called by
+`grLib_801C9B20`. The count is `0x06000000`, suggesting an unconverted big-endian
+6 in `arg1->count`; this hypothesis is not yet fixed or proven.
+
+An earlier flags-only test reached Stadium initialization and stopped in
+`HSD_TlutLoadDesc(tlutdesc=0x09000000)` from `HSD_TObjAddAnim`, via
+`grAnime_801C8138`. Audit the texture-animation descriptor/table/count conversion
+if this recurs. This Stadium run preceded the shared-material-field fix.
+
+Attract-mode stages are randomized. These observations show progress past the
+previous stops, not that every stage loads or gameplay works.
+
+### Verification and build
+
+`powershell -File pc/tests/run_renderer_tests.ps1 -Gpu` passes the eight CPU
+test executables plus the Vulkan TEV GPU readback test. Runtime checks above
+used an incremental rebuild of the changed host objects and `ground.c`, then
+relinked the native executable; no clean full rebuild was performed this session.
+
+Full build from MSYS, from the repository root:
+
+```sh
+export PATH="/c/Users/Owner/msys64/mingw32/bin:$PATH"
+CC=/c/Users/Owner/msys64/mingw32/bin/gcc.exe bash tools/phase0/linkexe.sh -m32 --renderer
+```
+
+Run `build/phase2/melee_host.exe` from the repository root. The user's ignored
+`game.iso` must be there. Keep native recovered C, 32-bit pointers, real GX
+interpretation, and strict unsupported-feature diagnostics. Do not commit game
+assets, extracted data, binaries, or framebuffer captures. Do not run concurrent
+builds against `build/phase2`.
+
+## Historical checkpoint: two known stops in VS stage setup, plus one open question
 
 Runs are NOT deterministic -- the attract-mode demo picks a stage at random,
 and different stages take different paths -- so a single clean run proves

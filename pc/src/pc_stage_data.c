@@ -228,9 +228,9 @@ void pc_stage_head_to_native(UnkStageDat* d)
         UnkStageDatInternal* e = d->unk28[i];
         /* grDatFiles_801C6228 read-modify-writes this word, so it has to be
            in host order before that happens. */
-        if (e != NULL && pc_hsd_claim(e, sizeof *e, PC_HSD_STAGEENTRY)) {
-            e->unk4 = swap32(e->unk4);
-        }
+        /* This is a shallow view of an MObjDesc, not a distinct object.
+           Claim only the shared rendermode field; full MObj loading follows. */
+        if (e != NULL) pc_hsd_mobj_flags_to_native(&e->unk4);
     }
 }
 
@@ -344,6 +344,7 @@ void pc_stage_itemdata_to_native(struct GroundItemData** table)
  * and located, and it is being handed out for the first time. */
 void* __real_HSD_ArchiveGetPublicAddress(HSD_Archive* archive,
                                          const char* symbols);
+void pc_hsd_particle_banks_to_native(void* cmd, void* tex, void* form);
 void* __wrap_HSD_ArchiveGetPublicAddress(HSD_Archive* archive,
                                          const char* symbols)
 {
@@ -358,6 +359,10 @@ void* __wrap_HSD_ArchiveGetPublicAddress(HSD_Archive* archive,
             pc_ground_param_to_native((GroundParam*) p);
         } else if (strcmp(symbols, "itemdata") == 0) {
             pc_stage_itemdata_to_native((struct GroundItemData**) p);
+        } else if (strcmp(symbols, "map_ptcl") == 0) {
+            pc_hsd_particle_banks_to_native(p, NULL, NULL);
+        } else if (strcmp(symbols, "map_texg") == 0) {
+            pc_hsd_particle_banks_to_native(NULL, p, NULL);
         }
     }
     return p;
