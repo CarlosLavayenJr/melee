@@ -37,6 +37,9 @@ void pc_vulkan_end_frame(void);
    frames are drawn into, and the current swapchain extent. */
 VkDevice pc_vulkan_device(void);
 VkPhysicalDevice pc_vulkan_physical_device(void);
+/* Uploads share this queue on the renderer thread only. */
+VkQueue pc_vulkan_graphics_queue(void);
+unsigned pc_vulkan_graphics_family(void);
 VkRenderPass pc_vulkan_render_pass(void);
 void pc_vulkan_extent(unsigned* width, unsigned* height);
 

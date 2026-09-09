@@ -214,7 +214,7 @@ elif [ "$TRACE_GX" != 1 ]; then
   EXCLUDE_TRACE='pc/src/pc_gx_trace\.c|'
 fi
 if [ "$RENDERER" != 1 ]; then
-  EXCLUDE_TRACE="${EXCLUDE_TRACE:-}"'pc/src/pc_vulkan\.c|pc/src/pc_gx_render\.c|pc/src/pc_gx_fifo\.c|'
+  EXCLUDE_TRACE="${EXCLUDE_TRACE:-}"'pc/src/pc_vulkan\.c|pc/src/pc_gx_render\.c|pc/src/pc_gx_fifo\.c|pc/src/pc_gx_texture\.c|'
 fi
 
 EXCLUDE="${EXCLUDE_TRACE:-}${EXCLUDE_HOSTLIBC:-}"'dolphin/stub\.c|amcstubs|odemustubs|MetroTRK|dolphin/os/OS(Interrupt|Alarm|Time|Cache|Context|Reset|ResetSW|Thread)?\.c|MSL/printf\.c|dolphin/pad/pad\.c|dolphin/ar/ar\.c|dolphin/dsp/dsp(_task)?\.c|dolphin/dvd/dvdlow\.c'
