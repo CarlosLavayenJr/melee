@@ -55,7 +55,22 @@ rm -rf "$OUT"; mkdir -p "$OUT/obj"
 
 # -fgnu89-inline matches how MWCC treats the `extern inline` math helpers;
 # without it GCC emits one copy per translation unit and they collide.
-CFLAGS="$BITS -w -c -O0 -fgnu89-inline -fno-strict-aliasing"
+# -std=gnu17 pins the language dialect: GCC 15+ defaults toward C23, where
+# `bool` is a keyword, and src/MSL/stdbool.h's own `typedef int bool;` (which
+# MWCC never objected to) fails to compile under that default.
+# -Wno-error=implicit-function-declaration: GCC 14+ made implicit declarations
+# a hard error where every older GCC just warned. The decomp calls PPC
+# intrinsics like __cntlzw that MWCC provided as compiler builtins with no
+# header to declare them; pc_ppc.c defines host equivalents, but nothing
+# declares them before use. Compiling stopped there rather than linking fine,
+# same as it always did -- this just un-upgrades the diagnostic.
+CFLAGS="$BITS -w -c -O0 -g -fgnu89-inline -fno-strict-aliasing -std=gnu17"
+CFLAGS="$CFLAGS -Wno-error=implicit-function-declaration"
+# Same story for incompatible-pointer-types: also promoted to a hard error in
+# GCC 14+. Interrupt handlers get registered against `struct Foo*` in one
+# header and the typedef'd `Foo*` in another -- the same type, but stricter
+# checking now refuses the mismatch outright instead of warning.
+CFLAGS="$CFLAGS -Wno-error=incompatible-pointer-types"
 if [ "$TRACE_DVD" = 1 ]; then
   CFLAGS="$CFLAGS -DPC_DVD_TRACE"
 fi
@@ -112,9 +127,15 @@ if [ "$BITS" = "-m32" ]; then
     INCLUDES="$INCLUDES -I /usr/$(echo "$CC" | sed 's/-gcc$//')/include"
     INCLUDES="$INCLUDES -I src -I extern/dolphin/include -I extern/dolphin/src"
     # pc/src is host code, not console code, and wants the opposite priority:
-    # <windows.h> needs MinGW's size_t, which MSL's stddef.h would shadow.
+    # <windows.h> needs MinGW's real stdlib.h and stddef.h -- for malloc/free
+    # (windows.h drags in xmmintrin.h, which needs them declared) and size_t --
+    # and extern/dolphin/include/libc's own shadow copies must not pre-empt
+    # them. -idirafter, unlike -I, is searched after the compiler's built-in
+    # system directories rather than before, so it still resolves headers the
+    # system doesn't have (dolphin/os/OS.h and friends) without shadowing the
+    # ones it does.
     INCLUDES_PC="-I pc/src -I src -I extern/dolphin/include"
-    INCLUDES_PC="$INCLUDES_PC -I extern/dolphin/include/libc -I extern/dolphin/src"
+    INCLUDES_PC="$INCLUDES_PC -idirafter extern/dolphin/include/libc -I extern/dolphin/src"
     # MSL's implementations still duplicate msvcrt's, so those sources go.
     EXCLUDE_HOSTLIBC="src/MSL/(ctype|string|mem|mem_funcs|float|errno|rand|misc_io|abort_exit|uart_console_io|mbstring|math_data)\\.c|"
   elif ! echo 'int main(void){return 0;}' | "$CC" -m32 -x c -o /dev/null - 2>/dev/null; then
@@ -125,6 +146,17 @@ if [ "$BITS" = "-m32" ]; then
     LDFLAGS="-nostdlib -static"
   fi
 fi
+# @file response files (below) are read by the linker itself, not by MSYS's
+# exec wrapper, so the usual POSIX-to-Windows path rewrite that happens for
+# plain argv never applies to them; ld.exe then can't resolve `/c/...` paths.
+# cygpath -m fixes that up front. On real Linux there's no cygpath and none
+# of this applies, so the paths pass through unchanged.
+if command -v cygpath >/dev/null; then
+  rsp_paths() { cygpath -m -f -; }
+else
+  rsp_paths() { cat; }
+fi
+
 for d in $(find extern/dolphin/src -type d); do INCLUDES="$INCLUDES -I $d"; done
 # src/MSL is added only alongside the freestanding headers. Its stddef.h types
 # intptr_t as `int`, which is right for the 32-bit ABI the decomp targets and
@@ -174,8 +206,12 @@ echo "  objects: $(find "$OUT/obj" -name '*.o' | wc -l)"
 # Ask the linker which symbols are genuinely unresolved. Deriving this from nm
 # alone over-reports: it does not know the host libc supplies sinf, printf,
 # mmap and friends, and stubbing those shadows the real implementations.
+# The object list goes through an @file: with hundreds of objects, the plain
+# argv form overflows MSYS's exec argument limit on Windows ("Argument list
+# too long") well under the nominal Win32 command-line size.
+printf '%s\n' "$OUT"/obj/*.o | rsp_paths > "$OUT/objs.rsp"
 # shellcheck disable=SC2086
-"$CC" $BITS -o /dev/null "$OUT"/obj/*.o $LDFLAGS 2>&1 \
+"$CC" $BITS -o /dev/null "@$OUT/objs.rsp" $LDFLAGS 2>&1 \
   | grep -oE "undefined reference to \`[^']*'" \
   | sed "s/.*\`//; s/'//" | sort -u > "$OUT/todo.txt"
 
@@ -203,8 +239,9 @@ cd "$ROOT"
 # shellcheck disable=SC2086
 "$CC" $BITS -w -c $STUBFLAGS "$OUT/stubs.c" -o "$OUT/stubs.o"
 echo "Linking..."
+printf '%s\n' "$OUT"/obj/*.o "$OUT/stubs.o" | rsp_paths > "$OUT/objs.rsp"
 # shellcheck disable=SC2086
-if "$CC" $BITS -o "$OUT/$OUTBIN" "$OUT"/obj/*.o "$OUT/stubs.o" $LDFLAGS 2>"$OUT/link.log"; then
+if "$CC" $BITS -o "$OUT/$OUTBIN" "@$OUT/objs.rsp" $LDFLAGS 2>"$OUT/link.log"; then
   echo "  linked: $(du -h "$OUT/$OUTBIN" | cut -f1)"
 else
   echo "  LINK FAILED — see $OUT/link.log"; head -5 "$OUT/link.log"; exit 1

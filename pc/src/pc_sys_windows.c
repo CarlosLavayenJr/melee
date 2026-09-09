@@ -30,9 +30,9 @@
 
 #include "pc_sys.h"
 
-#include <windows.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <windows.h>
 
 int pc_sys_map_fixed(unsigned long at, unsigned long size)
 {
