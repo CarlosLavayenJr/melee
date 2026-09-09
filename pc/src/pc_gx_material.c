@@ -65,6 +65,7 @@ int pc_gx_material_get(pc_gx_material* out)
     if ((bp[0x40] & 1) && ((bp[0x40] >> 1) & 7) != 7)
         return unsupported(7, "depth comparison needs depth attachment");
     if ((bp[0xf1] >> 21) & 7) return unsupported(8, "fog");
+    if ((bp[0xf5] >> 2) & 3) return unsupported(11, "depth-texture operation");
     out->reg0[0] = signed11(tev_registers[2]); out->reg0[3] = signed11(tev_registers[2] >> 12);
     out->reg0[2] = signed11(tev_registers[3]); out->reg0[1] = signed11(tev_registers[3] >> 12);
     out->color = tc; out->alpha = ta; out->compare = bp[0xf3]; out->textured = tex;

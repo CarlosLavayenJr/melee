@@ -1,4 +1,11 @@
 #include "lbmthp.h"
+#ifdef PC_GX_RENDERER
+#include "pc_mth.h"
+#include "pc_sys.h"
+#define MTH_FRAME_SIZE(p) pc_mth_u32((const void*)(p))
+#else
+#define MTH_FRAME_SIZE(p) (*(u32*)(p))
+#endif
 
 #include <placeholder.h>
 
@@ -117,7 +124,12 @@ static void fn_8001E910(int arg0, int arg1, void* arg2, int cancelflag)
     } else {
         var_r0 = streamPlayer->unk_8C - 1;
     }
-    streamPlayer->currPackedSize = *(u32*) streamPlayer->frame_buffers[var_r0];
+    streamPlayer->currPackedSize = MTH_FRAME_SIZE(streamPlayer->frame_buffers[var_r0]);
+#ifdef PC_GX_RENDERER
+    if (streamPlayer->currPackedSize > streamPlayer->unk_100) {
+        pc_sys_log("pc_mth: asynchronous frame exceeds buffer size\n"); pc_sys_exit(1);
+    }
+#endif
     if (streamPlayer->unk_90 != streamPlayer->unk_8C &&
         streamPlayer->unk_70 != 0)
     {
@@ -166,6 +178,11 @@ static s32 fn_8001EB14(THPDecComp* data, const char* path)
     THPInit();
     data->file_entrynum = DVDConvertPathToEntrynum(path);
     lbFile_800161C4(data->file_entrynum, 0, (u32) data, 0x40, 0x21, 1);
+#ifdef PC_GX_RENDERER
+    if (pc_mth_header_to_native(data)) {
+        pc_sys_log("pc_mth: unsupported or malformed MTHP header\n"); pc_sys_exit(1);
+    }
+#endif
 
     data->unk_40 = data->num_frames;
     data->width = data->x_size;
@@ -297,7 +314,12 @@ static void fn_8001ECF4(THPDecComp* data, void* buf)
                             1);
             csizep = var_r29;
             data->curr_file_offset += var_r24;
-            var_r24 = *(u32*) var_r29;
+            var_r24 = MTH_FRAME_SIZE(var_r29);
+#ifdef PC_GX_RENDERER
+            if (var_r24 > data->unk_100) {
+                pc_sys_log("pc_mth: frame exceeds declared buffer size\n"); pc_sys_exit(1);
+            }
+#endif
             var_r29 = var_r29 + data->unk_100;
         }
         data->unk_74 = var_r25;
@@ -332,6 +354,13 @@ static s32 fn_8001EF5C(THPDecComp* data)
     BOOL intr;
 
     if ((u32) data->unk_94 != data->unk_90) {
+#ifdef PC_GX_RENDERER
+        /* THPDec.c's Huffman receive and IDCT kernels are MWCC assembly only.
+           The host's empty branches otherwise use uninitialized coefficients.
+           Replace these kernels with native C before enabling movie decoding. */
+        pc_sys_log("pc_mth: native THP Huffman/IDCT kernels not implemented; cannot decode opening movie\n");
+        pc_sys_exit(1);
+#endif
         intr = OSDisableInterrupts();
         data->unk_98 = THPVideoDecode(
             &data->unk_A8, &spC, (void*) data->unk_98,
@@ -537,6 +566,9 @@ void lbMthp_8001F410(const char* filename, u32* rate_table, void* buf,
         MoviePlayer.unk_140 = buf;
     }
     MoviePlayer.unk_68 = loop;
+#ifdef PC_GX_RENDERER
+    if (!buf) { pc_sys_log("pc_mth: movie buffer allocation failed\n"); pc_sys_exit(1); }
+#endif
     fn_8001ECF4(&MoviePlayer, buf);
     MoviePlayer.unk_144 = 0;
     MoviePlayer.unk_148 = 1;

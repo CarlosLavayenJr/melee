@@ -19,6 +19,7 @@
 #include "pc_sys.h"
 #include "pc_vulkan.h"
 #include "pc_gx_texture.h"
+#include "pc_texture_decode.h"
 
 #include <dolphin/gx.h>
 #include <stdint.h>
@@ -132,7 +133,13 @@ void __wrap_GXLoadTexObj(GXTexObj* obj, GXTexMapID id)
             (native_sources[i].image & 0x1fffff) == (image & 0x1fffff)) break;
         if (i < 1024) {
             if (!native_sources[i].size) {
-                pc_sys_log("pc_gx_render: unknown native texture source\n"); pc_sys_exit(1);
+                u32 words[8];
+                memcpy(words, obj, sizeof words);
+                if (pc_texture_source_size(words[5], (words[2]&1023)+1, ((words[2]>>10)&1023)+1)) {
+                    pc_sys_log("pc_gx_render: unknown native texture source\n"); pc_sys_exit(1);
+                }
+                /* Unsupported formats are rejected before any source read;
+                   preserve that precise diagnostic (e.g. native GX_TF_Z8). */
             }
             pc_gx_texture_load_obj_source(obj, (unsigned)id, native_sources[i].source, native_sources[i].size);
         } else pc_gx_texture_load_obj(obj, (unsigned)id);

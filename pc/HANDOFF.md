@@ -1,5 +1,31 @@
 # Handoff — September 9, 2026 checkpoint
 
+## Current blocker: native movie decoding, after successful no-card progression
+
+Latest MTHP header/frame-size conversion now validates dimensions and buffer
+bounds, fixing the opening movie's failed allocation. Real MvOpen.mth header:
+version=2, 640x480, 30 fps, 3036 frames, buffer=0xeee0, first frame=0x1e00.
+The next run reached `__THPHuffDecodeDCTCompY` and crashed on an uninitialized
+Huffman lookup: THPDec.c's receive/IDCT kernels exist only inside MWCC assembly
+guards. The host now stops BEFORE decoding with an explicit `pc_mth: native THP
+Huffman/IDCT kernels not implemented` diagnostic. No opening-video pixels,
+gameplay, or title screen are claimed. Menu font rendering remains verified.
+
+Next substantial task: implement/test native C entropy and IDCT kernels (and
+audit THP structures/bitstream endianness), then GX YUV texture/material support.
+Do not bypass the opening scene or supply fake frames. Z8 depth textures used by
+HSD_EraseRect are now correctly diagnosed as unsupported before source reads;
+depth-texture operations are rejected by the material path.
+
+Run locally from PowerShell:
+`cd C:\Users\Owner\melee`, then `.\build\phase2\melee_host.exe`.
+Keep game.iso in that directory. J=A/confirm, K=B, Enter=Start, WASD=stick,
+arrows=D-pad, L=X, I=Y, U=Z, Space=L-trigger. Saves and audio playback remain
+unimplemented. Controlled PADStatus tests, not hardware keyboard automation,
+confirmed progression through no-card choices into opening scene initialization.
+
+---
+
 ## Latest: HPS stream metadata fixed; opening movie header is next
 
 Audio metadata now converts at the three stream-header consumption callbacks.
