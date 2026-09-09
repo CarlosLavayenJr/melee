@@ -1,5 +1,34 @@
 # Handoff — September 9, 2026 checkpoint
 
+## Latest VERIFIED checkpoint: readable native menu text
+
+The SIS endian blocker below is fixed. A Vulkan framebuffer readback was
+visually inspected and displays **"There is no Memory Card in Slot A."** in
+the actual game's font, with transparent glyph backgrounds and readable
+two-line layout. This is game-issued geometry and runtime-loaded font data,
+not mock visuals. The fourth frame-end breakpoint reached the normal memory-card
+menu loop without the invalid-source exit. No gameplay or broader menus verified.
+
+`sis_byteorder.h` provides renderer-host big-endian reads while retaining the
+original console dereferences. All 18 SIS 16-bit loads in hsd_3A76.c now use
+these readers: glyph rendering AND measurement, scales, signed positions and
+spacing, delays and saved-state restoration. Saved pointers are read in the
+same big-endian byte order that the existing stack writer emits. Archive-
+relocated jump pointers remain native and are deliberately not swapped again.
+Producer audit: hsd_3A64.c writes coordinates/scales explicitly high byte first;
+hsd_3A76.c does the same for saved values/pointers. Texture bytes stay raw.
+
+Regression: `pc/tests/sis_byteorder_test.c` covers odd alignment, glyph 0x201d,
+negative spacing, fixed-point scale and saved-pointer round trips. Compile with
+32-bit GCC, `-DPC_GX_RENDERER`, compat.h and normal host/game include paths.
+
+Next work: test continuation/input through the actual memory-card prompt and
+audit newly encountered material/descriptor state. Do not assume correct
+gameplay from a correctly rendered text message. Texture/TEV subset limitations
+documented below still apply. No extracted assets or frame captures committed.
+
+---
+
 ## Latest WIP: texture/shader wiring; current blocker supersedes status below
 
 New code loads the native font atlas from the user's GALE01 revision-2 disc

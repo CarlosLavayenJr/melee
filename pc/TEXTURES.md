@@ -1,6 +1,10 @@
 # Native texture upload
 
-Latest checkpoint: UVs and immutable sampled-image descriptors are wired into a
+Verified update: after correcting SIS byte-order reads, actual sampled font
+glyphs render the two-line memory-card message in a Vulkan readback. This
+confirms the narrow menu texture/TEV path, not arbitrary materials or gameplay.
+
+Earlier checkpoint: UVs and immutable sampled-image descriptors are wired into a
 constrained single-stage TEV shader. Visual verification is still blocked by SIS
 glyph byte order producing an invalid font pointer; see the top of HANDOFF.md.
 Native font bytes are loaded from the user's disc data, never committed.

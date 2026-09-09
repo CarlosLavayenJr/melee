@@ -3,7 +3,8 @@
 Latest checkpoint: these shaders now accept UVs and implement a validated subset
 of single-stage TEV arithmetic, alpha comparison and REG0 inputs. Unsupported
 states are rejected by pc_gx_material.c; this is not complete/bit-exact TEV.
-Real-game visual verification is pending the SIS byte-order blocker in HANDOFF.md.
+The SIS byte-order fix enabled verified real-font rendering of the memory-card
+message. Broader material configurations remain unverified; see HANDOFF.md.
 Regenerate binaries AND embedded aligned headers with `./pc/shaders/regenerate.ps1`.
 The original design notes below predate this implementation.
 
