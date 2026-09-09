@@ -190,8 +190,11 @@ LDFLAGS="$LDFLAGS -Wl,--wrap=HSD_CObjInit -Wl,--wrap=HSD_CObjLoadDesc"
 WRAPPED="GXBegin GXCallDisplayList GXLoadTexObj GXSetTevOrder GXSetProjection GXLoadPosMtxImm GXCopyDisp"
 # pc_gx_trace.c implements only the list above. pc_gx_render.c implements
 # that same list plus these -- init and the clear color have no trace-mode
-# equivalent, since a recorder has no swapchain to clear.
-RENDERER_ONLY="GXInit GXSetCopyClear"
+# equivalent, since a recorder has no swapchain to clear. The vertex-format
+# calls are pc_gx_fifo.c's shadow state (pc/GX_RENDERER.md): a recorder has
+# no use for them either, since it never decodes what a display list's
+# bytes mean.
+RENDERER_ONLY="GXInit GXSetCopyClear GXSetVtxDesc GXClearVtxDesc GXSetVtxAttrFmt GXSetArray"
 if [ "$TRACE_GX" = 1 ] || [ "$RENDERER" = 1 ]; then
   for w in $WRAPPED; do LDFLAGS="$LDFLAGS -Wl,--wrap=$w"; done
 fi
@@ -205,7 +208,7 @@ elif [ "$TRACE_GX" != 1 ]; then
   EXCLUDE_TRACE='pc/src/pc_gx_trace\.c|'
 fi
 if [ "$RENDERER" != 1 ]; then
-  EXCLUDE_TRACE="${EXCLUDE_TRACE:-}"'pc/src/pc_vulkan\.c|pc/src/pc_gx_render\.c|'
+  EXCLUDE_TRACE="${EXCLUDE_TRACE:-}"'pc/src/pc_vulkan\.c|pc/src/pc_gx_render\.c|pc/src/pc_gx_fifo\.c|'
 fi
 
 EXCLUDE="${EXCLUDE_TRACE:-}${EXCLUDE_HOSTLIBC:-}"'dolphin/stub\.c|amcstubs|odemustubs|MetroTRK|dolphin/os/OS(Interrupt|Alarm|Time|Cache|Context|Reset|ResetSW|Thread)?\.c|MSL/printf\.c|dolphin/pad/pad\.c|dolphin/ar/ar\.c|dolphin/dsp/dsp(_task)?\.c|dolphin/dvd/dvdlow\.c'

@@ -10,11 +10,12 @@
  * octagonal gate and will start mattering the moment PADRead reports real
  * sticks.
  *
- * No real input yet. Every port reports PAD_ERR_NO_CONTROLLER, which is the
- * honest answer while nothing is reading a keyboard or gamepad, and it is what
- * the game already handles gracefully on a console with empty ports. Wiring
- * this to SDL is a self-contained next step: fill PADRead's array and the rest
- * of the game needs no changes, because this narrow API is the whole surface.
+ * Port 0 reads a real keyboard on Windows now -- read_keyboard() below --
+ * filling exactly the array this comment used to say nothing filled. Ports
+ * 1-3 still report PAD_ERR_NO_CONTROLLER. Wiring a real gamepad (SDL,
+ * XInput) is the next step after this one, and changes nothing outside this
+ * function either, for the same reason keyboard didn't: this narrow API is
+ * the whole surface.
  *
  * The GameCube has four ports. That limit lives here rather than in the game
  * -- pl/player.c iterates six player slots (GM_MAX_PLAYERS), which is why
@@ -27,6 +28,50 @@
 #include "pc_watch.h"
 
 #define PC_PAD_PORTS 4
+
+#ifdef _WIN32
+#include <windows.h>
+
+/* A default-with-no-config mapping, not a claim of correctness for
+   everyone's hands -- swappable later without touching anything outside
+   this function. Melee reads the left stick for movement far more than the
+   digital d-pad, so WASD drives stickX/stickY rather than PAD_BUTTON_*. */
+static int down(int vk) { return (GetAsyncKeyState(vk) & 0x8000) != 0; }
+
+static void read_keyboard(PADStatus* status)
+{
+    u16 button = 0;
+    s8 stick_x = 0, stick_y = 0;
+
+    if (down('D')) stick_x = 80;
+    else if (down('A')) stick_x = -80;
+    if (down('W')) stick_y = 80;
+    else if (down('S')) stick_y = -80;
+
+    if (down('J')) button |= PAD_BUTTON_A;
+    if (down('K')) button |= PAD_BUTTON_B;
+    if (down('L')) button |= PAD_BUTTON_X;
+    if (down('I')) button |= PAD_BUTTON_Y;
+    if (down('U')) button |= PAD_TRIGGER_Z;
+    if (down(VK_SPACE)) button |= PAD_TRIGGER_L;
+    if (down(VK_RETURN)) button |= PAD_BUTTON_START;
+    if (down(VK_LEFT)) button |= PAD_BUTTON_LEFT;
+    if (down(VK_RIGHT)) button |= PAD_BUTTON_RIGHT;
+    if (down(VK_UP)) button |= PAD_BUTTON_UP;
+    if (down(VK_DOWN)) button |= PAD_BUTTON_DOWN;
+
+    status->button = button;
+    status->stickX = stick_x;
+    status->stickY = stick_y;
+    status->substickX = 0;
+    status->substickY = 0;
+    status->triggerLeft = down(VK_SPACE) ? 150 : 0;
+    status->triggerRight = 0;
+    status->analogA = 0;
+    status->analogB = 0;
+    status->err = PAD_ERR_NONE;
+}
+#endif
 
 /* From pad.h's error codes: no controller present in the port. */
 #define PC_PAD_ERR_NO_CONTROLLER -1
@@ -62,7 +107,12 @@ u32 PADRead(PADStatus* status)
         status[i].analogB = 0;
         status[i].err = PC_PAD_ERR_NO_CONTROLLER;
     }
+#ifdef _WIN32
+    read_keyboard(&status[0]);
+    return 1; /* bit 0: port 0's read completed */
+#else
     return 0; /* bitmask of ports whose read completed */
+#endif
 }
 
 void PADSetSamplingRate(unsigned long msec) { (void) msec; }

@@ -76,12 +76,14 @@ void __wrap_GXBegin(GXPrimitive type, GXVtxFmt vtxfmt, u16 nverts)
     __real_GXBegin(type, vtxfmt, nverts);
 }
 
+extern void pc_gx_fifo_exec(VkCommandBuffer cmd, const void* data,
+                            u32 nbytes);
+
 void __real_GXCallDisplayList(void* list, u32 nbytes);
 void __wrap_GXCallDisplayList(void* list, u32 nbytes)
 {
-    ensure_frame();
-    /* The FIFO decoder (pc_gx_fifo.c) is milestone 5; this is where it
-       plugs in once it exists. */
+    VkCommandBuffer cmd = ensure_frame();
+    pc_gx_fifo_exec(cmd, list, nbytes);
     __real_GXCallDisplayList(list, nbytes);
 }
 
@@ -100,15 +102,20 @@ void __wrap_GXSetTevOrder(GXTevStageID stage, GXTexCoordID coord,
     __real_GXSetTevOrder(stage, coord, map, color);
 }
 
+extern void pc_gx_fifo_set_proj_mtx(float m[4][4]);
+extern void pc_gx_fifo_set_pos_mtx(float m[3][4]);
+
 void __real_GXSetProjection(f32 mtx[4][4], GXProjectionType type);
 void __wrap_GXSetProjection(f32 mtx[4][4], GXProjectionType type)
 {
+    pc_gx_fifo_set_proj_mtx(mtx);
     __real_GXSetProjection(mtx, type);
 }
 
 void __real_GXLoadPosMtxImm(f32 mtx[3][4], u32 id);
 void __wrap_GXLoadPosMtxImm(f32 mtx[3][4], u32 id)
 {
+    pc_gx_fifo_set_pos_mtx(mtx);
     __real_GXLoadPosMtxImm(mtx, id);
 }
 
