@@ -10,6 +10,11 @@ int pc_hsd_claim(void* data, size_t size, unsigned kind);
    pc_hsd_archive_body marked. Schemas whose counts and offsets come out of the
    data itself use this to check a derived pointer before following it. */
 int pc_hsd_in_archive(const void* data, size_t size);
+/* Which schema last claimed the word at `p`: 0 when it is not archive
+   memory, 0x80 when it arrived as an archive body and nothing has claimed
+   it, otherwise the PC_HSD_* value that did. For diagnostics -- it answers
+   "who converted this before I got here" by name rather than by guess. */
+unsigned pc_hsd_kind_at(const void* p);
 /* Shared field schema: stage map_head and MObj loading both access this word. */
 void pc_hsd_mobj_flags_to_native(void* flags);
 enum { PC_HSD_POBJ = 1, PC_HSD_VERTEX, PC_HSD_ENVELOPE, PC_HSD_JOINT,
@@ -25,5 +30,5 @@ enum { PC_HSD_POBJ = 1, PC_HSD_VERTEX, PC_HSD_ENVELOPE, PC_HSD_JOINT,
        PC_HSD_FTDEMOMOVES, PC_HSD_STAGEMAPENTRY, PC_HSD_FTCOMMON, PC_HSD_FTPARTS,
        PC_HSD_FTHIDDENPARTS, PC_HSD_FTMODELS, PC_HSD_FTTOBJIDS,
        PC_HSD_FTVIS, PC_HSD_FTVISRUN,
-       PC_HSD_FTHURT, PC_HSD_FTDYNAMICS };
+       PC_HSD_FTHURT, PC_HSD_FTDYNAMICS, PC_HSD_FTEXTATTR };
 #endif

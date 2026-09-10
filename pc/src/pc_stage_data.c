@@ -377,6 +377,21 @@ void pc_ground_param_to_native(GroundParam* p)
        from xB8 on are four bytes each and have no byte order. */
     swap_s32(&p->stage_param_count);
     if (p->stage_params != NULL) {
+        /* On about half the stages Ground_801C28CC then fails to find the row
+           for the stage being loaded, and the reason is always the same shape:
+           row 0's stkind is already host order before this runs, so converting
+           the array leaves that one row reversed while every other row comes
+           out right. Something wrote that word first. The mark says which
+           schema, by name, instead of leaving it to be guessed -- 0x80 means
+           nothing had claimed it, which is the healthy case. */
+        unsigned mark = pc_hsd_kind_at(p->stage_params);
+        if (mark != 0x80) {
+            pc_sys_log("pc_stage_data: stage param row 0 at ");
+            log_uint((u32) (uintptr_t) p->stage_params);
+            pc_sys_log(" was already claimed by schema ");
+            log_uint(mark);
+            pc_sys_log("\n");
+        }
         check_array(p->stage_params, p->stage_param_count,
                     sizeof p->stage_params[0], "stage param count");
         for (i = 0; i < p->stage_param_count; i++) {

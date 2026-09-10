@@ -113,15 +113,68 @@ Each of these is a byte-order schema, and each was found at a real line:
 6. **FIXED** `aobj.c:47` segfault, `HSD_AObjSetFlags(aobj = 0x3)` reached from
    `grAnime_801C77FC` while Icicle Mountain set itself up. NOT a byte-order
    bug -- see "the third hazard" below.
-7. **OPEN** On one run the stage was Mute City and `stage_info.param` pointed
-   into the executable's own image (0xb9c300), not game RAM, with
-   `stage_param_count` 1 and a single row of `stkind=0, x4=-1, x8=-1`. That
-   is `grDatFiles_803E0848`, the built-in default `grDatFiles_801C6038` uses
-   when it is handed a NULL filename -- but `grMc_StageData.data1` is
-   `"/GrMc.dat"`, so it should never have taken that branch.
-   `pc_ground_param_to_native` was never called for it, which fits: no
-   archive symbol was ever handed out. Worth resolving before trusting any
-   stage that reports "not found stage param".
+7. **FIXED** `ftanim.c:1008` "fighter tobj num over!", `ftparts.c:665`
+   segfault in the part-visibility walk, `ftcoll.c:3224` "fighter hit num
+   over!" -- three counts in the fighter's archive. See `pc/src/pc_ft_data.c`.
+8. **PARTLY FIXED** `ftchangeparam.c:138` segfault: `fp->x2D0 = fp->dat_attrs`
+   (ftkirby.c, ftpurin.c) then a loop bounded by a count in the block. That
+   block is `ftData::ext_attr`, one layout per character, and the file does
+   not record its size -- see "Character attribute blocks" below. Kirby is
+   converted; Jigglypuff and everyone else are reported and left alone.
+9. **OPEN, and now the biggest single blocker: "not found stage param".**
+
+### The stage-param stop, and what is known about it
+
+Roughly half of the random stages reach `gm_Scene_Vs_OnEnter` and stop in
+`Ground_801C28CC`, which searches `stage_info.param->stage_params[]` for a row
+whose `stkind` matches the stage being loaded and finds none. Observed on Mute
+City, Rainbow Cruise, Temple, Yoshi's Island (Yoster) and Venom; Onett,
+Fountain of Dreams and Yoshi's Story worked.
+
+What the rows look like matters. A ground's table is one row per stage id it
+serves, the first being its own VS `StKind` and the rest event and target
+stage ids. On a stage that works, every row arrives big-endian and comes out
+right:
+
+    Onett, want 9:   raw 09000000 4b000000 69000000 ...  ->  9, 75, 105, ...
+
+On a stage that fails, **row 0 alone is already host order before conversion,
+so converting the array leaves it reversed while every other row is right**:
+
+    Yoster, want 16:  [0] 10000000  [1] 0000005f  [2] 00000087  ...
+
+`pc_ground_param_to_native` did run (its trace line is there), the object is
+archive memory, and `swap_stage_param` has no per-row claim -- so nothing in
+this port converts row 0 twice on purpose. Something else wrote that one word
+first.
+
+The best remaining hypothesis, untested: `pc_stage_head_to_native` ends by
+calling `pc_hsd_mobj_flags_to_native(&e->unk4)` for each `map_head` entry,
+which swaps **exactly one u32**, at `entry + 4`. If any `unk28[i]` happens to
+equal `((u8*) stage_params) - 4`, that swap lands precisely on
+`stage_params[0].stkind`. The test is to print every `unk28[i]` and the
+`stage_params` address on a failing stage and compare; a probe for that was
+running when this checkpoint was written.
+
+If that is it, the fix is not to loosen the mobj-flags swap but to find out
+why an `unk28` entry points there -- either the count `unk2C` is wrong or the
+entries are not all MObj-shaped.
+
+### Character attribute blocks (`ftData::ext_attr`)
+
+One layout per character, and **the file does not say how big it is**, so this
+cannot be done generically the way the rest of `ftData` was. Each character
+needs its struct, and the decomp states only ten: Captain, CrazyHand, Fox,
+Kirby, Link, Mario, Peach, Samus, Yoshi, Zelda. Of those, Kirby has an `s16`
+mid-struct and a `u8` at the end of a trailing `ReflectDesc`, Link has a
+4-byte filler, and Yoshi has three unnamed `char` runs -- so even where a
+struct exists, a blanket word swap is only right after checking it.
+
+Kirby is done, because it is what stopped the route. Everything else is
+reported once per character (`pc_ft_data: fighter N has no attribute-block
+layout here`) and left alone: these are floats a fighter runs on, and a
+wrong guess is a match that plays like nothing rather than one that crashes,
+which is exactly the failure this port must not produce quietly.
 
 ## Fighter data: what is converted and what is not
 

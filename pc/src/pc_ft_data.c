@@ -35,6 +35,8 @@
 #include <stddef.h>
 #include <string.h>
 
+#include <melee/lb/types.h>
+#include <melee/ft/kinds/ftKirby/types.h>
 #include <melee/ft/dobjlist.h>
 #include <melee/ft/fighter.h>
 #include <melee/ft/ftdata.h>
@@ -98,6 +100,22 @@ static void not_archive(FighterKind kind, const char* what)
     pc_sys_log("'s ");
     pc_sys_log(what);
     pc_sys_log(" is not archive memory, so its byte order is unconverted\n");
+}
+
+/* ext_attr is per character and the decomp states only some of the
+   layouts. Saying which characters are running on reversed attributes is
+   the whole point: nothing downstream will, because floats do not fault. */
+static void no_layout(FighterKind kind)
+{
+    static u8 said[FTKIND_MAX];
+    if (kind >= FTKIND_MAX || said[kind]) {
+        return;
+    }
+    said[kind] = 1;
+    pc_sys_log("pc_ft_data: fighter ");
+    log_uint((u32) kind);
+    pc_sys_log(" has no attribute-block layout here, so its character-"
+               "specific attributes stay byte-reversed\n");
 }
 
 /* The common attributes, ftData+0x00. Every field from +0x000 to +0x17C is a
@@ -283,6 +301,54 @@ static void dynamics_to_native(FighterKind kind, struct ftDynamics* d)
     swap_words(d->x8, (size_t) d->x4 * sizeof *d->x8);
 }
 
+/* ftData+0x04, the character-specific attribute block. There is one layout per
+   character and the file does not say how big it is, so this cannot be done
+   generically: each one needs its struct, and the decomp only states ten of
+   them. Converting a block whose layout is a guess would be worse than leaving
+   it -- these are floats a fighter runs on, and a wrong one is a match that
+   plays like nothing rather than a crash -- so anything not listed here is
+   reported and left alone.
+ *
+   Kirby is done because it is what stopped the route: ftkirby.c sets
+   fp->x2D0 = fp->dat_attrs, and ftCo_800D0CBC (ftchangeparam.c:138) then loops
+   over x14[] with x28 as the count. Byte-reversed that count is enormous and
+   the loop segfaults. Jigglypuff does the same thing and has no struct in the
+   decomp, so it will stop there until one exists.
+ *
+   Two members are not four bytes wide and are stepped around: the s16 at
+   jumpaerial_unk, and the u8 at the end of the trailing ReflectDesc. */
+static void ext_attr_to_native(FighterKind kind, void* e)
+{
+    if (e == NULL) {
+        return;
+    }
+    switch (kind) {
+    case FTKIND_KIRBY: {
+        struct ftKb_DatAttrs* a = e;
+        size_t s16_at = offsetof(struct ftKb_DatAttrs, jumpaerial_unk);
+        size_t after_s16 =
+            offsetof(struct ftKb_DatAttrs, specialn_x_offset_inhaled);
+        size_t u8_at = offsetof(struct ftKb_DatAttrs, specialn_zd_reflectdesc) +
+                       offsetof(struct ReflectDesc, x20_behavior);
+        if (!pc_hsd_claim(a, sizeof *a, PC_HSD_FTEXTATTR)) {
+            return;
+        }
+        swap_words(a, s16_at);
+        {
+            u16 v;
+            memcpy(&v, (unsigned char*) a + s16_at, sizeof v);
+            v = (u16) ((v >> 8) | (v << 8));
+            memcpy((unsigned char*) a + s16_at, &v, sizeof v);
+        }
+        swap_words((unsigned char*) a + after_s16, u8_at - after_s16);
+        break;
+    }
+    default:
+        no_layout(kind);
+        break;
+    }
+}
+
 /* PlCo.dat's "ftLoadCommonData" block: 23 relocated pointers to the tables
    every fighter shares (Fighter_LoadCommonData copies them out one by one).
    Three of them are converted here, and the other twenty are NOT -- they will
@@ -381,6 +447,7 @@ static void ft_data_to_native(FighterKind kind)
     models_to_native(kind, d->x8);
     hurtboxes_to_native(kind, d->x30);
     dynamics_to_native(kind, d->x2C);
+    ext_attr_to_native(kind, d->ext_attr);
 }
 
 /* ftdata.c loads the archive and fills gFtDataList[kind] here, and does it

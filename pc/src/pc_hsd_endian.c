@@ -48,6 +48,13 @@ int pc_hsd_in_archive(const void* data, size_t size)
     return 1;
 }
 
+unsigned pc_hsd_kind_at(const void* p)
+{
+    uintptr_t a = (uintptr_t) p;
+    if (!p || a < RAM_BASE || a >= RAM_BASE + RAM_BYTES) return 0;
+    return words[(a - RAM_BASE) / 4];
+}
+
 int pc_hsd_claim(void* data, size_t size, unsigned kind)
 {
     uintptr_t p = (uintptr_t)data;
