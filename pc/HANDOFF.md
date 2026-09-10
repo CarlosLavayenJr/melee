@@ -10,9 +10,11 @@ things: `ftData::x44`, the six bone indices the fighter's ECB is built from
 of the stage-param stop, which turned out to be a struct member that does not
 exist (stop 9).
 
-**By the end of the session that was 73 frames**, after the camera fix below.
-Be precise about what that is and is not: 73 frames is a little over a second,
-the test asks for 400, and no run has come close to that. What it does
+**By the end of the session that was 72-74 frames**, reproducibly, after the
+camera fix below. Be precise about what that is and is not: 73 frames is a
+little over a second, the test asks for 400, and no run has come close to
+that. The number is stable rather than lucky -- it is the same stop every
+time, described first in the list below. What it does
 establish is that the whole chain -- boot, menus, stage load, fighter
 creation, scene entry, and then a second of real physics, collision and
 rendering -- can complete, and that the remaining work is inside the match
