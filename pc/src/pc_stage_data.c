@@ -26,6 +26,7 @@
 #include "pc_hsd_endian.h"
 #include "pc_sys.h"
 
+#include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -197,7 +198,8 @@ void pc_map_coll_to_native(MapCollData* d)
 {
     int i;
 
-    if (d == NULL || !pc_hsd_claim(d, sizeof *d, PC_HSD_MAPCOLL)) {
+    if (d == NULL || !pc_hsd_claim(d, offsetof(MapCollData, x2C),
+                                  PC_HSD_MAPCOLL)) {
         return;
     }
     watch_report_base(d, sizeof *d, "the MapCollData struct itself");
@@ -218,7 +220,17 @@ void pc_map_coll_to_native(MapCollData* d)
     swap_s16(&d->dynamic_start);
     swap_s16(&d->dynamic_count);
     swap_s32(&d->joint_count);
-    swap_s32(&d->x2C);
+    /* NOT x2C. mp/types.h marks that member inferred, nothing
+       in the game reads it, and it does not exist: the tripwire caught this
+       schema turning 184549376 into 11 at coll_data+0x2C, and reported that
+       the word it had been watching -- grGroundParam's stage_params[0].stkind
+       -- sits exactly 44 bytes into the 48-byte MapCollData it was about to
+       convert. Two objects in one archive cannot overlap, so MapCollData ends
+       at 0x2C and the next object begins there.
+
+       This is the whole of the "not found stage param" stop, which cost more
+       runs than anything else in this port. Row 0 was always the row the
+       stage needed, because row 0 is the one at offset 0x2C. */
 
     watch_check("the coll_data struct fields");
     if (d->verts != NULL) {
@@ -613,7 +625,7 @@ void pc_it_common_data_to_native(void* p);
  * Castle and dynamicsdata_shipflag on Rainbow Cruise, so the dispatch matches
  * on the prefix rather than listing them.
  */
-static void pc_dynamics_desc_to_native(DynamicsDesc* d)
+void pc_dynamics_desc_to_native(DynamicsDesc* d)
 {
     void* rows;
     size_t bytes;

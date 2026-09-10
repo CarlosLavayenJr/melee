@@ -37,6 +37,20 @@
 
 #include <melee/lb/types.h>
 #include <melee/ft/kinds/ftKirby/types.h>
+#include <melee/ft/kinds/ftDonkey/types.h>
+#include <melee/ft/kinds/ftDrMario/types.h>
+#include <melee/ft/kinds/ftKoopa/types.h>
+#include <melee/ft/kinds/ftLuigi/types.h>
+#include <melee/ft/kinds/ftPichu/types.h>
+#include <melee/ft/kinds/ftPikachu/types.h>
+#include <melee/ft/kinds/ftSeak/types.h>
+#include <melee/ft/kinds/ftCaptain/types.h>
+#include <melee/ft/kinds/ftFox/types.h>
+#include <melee/ft/kinds/ftGameWatch/types.h>
+#include <melee/ft/kinds/ftMario/types.h>
+#include <melee/ft/kinds/ftNess/types.h>
+#include <melee/ft/kinds/ftPeach/types.h>
+#include <melee/ft/kinds/ftZelda/types.h>
 #include <melee/ft/dobjlist.h>
 #include <melee/ft/fighter.h>
 #include <melee/ft/ftdata.h>
@@ -328,6 +342,58 @@ static void ft_vec2_to_native(Vec2* v)
     swap_words(v, sizeof *v);
 }
 
+/* Three more small blocks hanging off ftData, all of them four-byte fields
+ * throughout and all of them reached on the way into a match.
+ *
+ * x34 is `{ Fighter_Part x0; float scale; }` and it announced itself the same
+ * way x44 did -- ft_07C1.c:43 segfaulted on
+ * `hit->jobj = fp->parts[x34->x0].joint`, a byte-reversed bone index used to
+ * subscript the part table.
+ *
+ * x38 is an array of `{ int x0; Vec3 x4; float x10; }` that ft_8007C630 walks
+ * and subscripts `fp->parts` with in exactly the same way, so it is the same
+ * stop one function over. Its length is not in the file, but it does not need
+ * to be: the loop is bounded by `ARRAY_SIZE(fp->x1614)`, a compile-time 2.
+ *
+ * x3C is two Vec3s of camera bounds, read every frame by ftCamera_80076018.
+ * That one is the grGroundParam case again -- all floats, so it would have
+ * framed the match wrongly rather than crashed.
+ */
+static void thrown_hitbox_to_native(struct ftData_x34* x)
+{
+    if (x == NULL || !pc_hsd_claim(x, sizeof *x, PC_HSD_FTX34)) {
+        return;
+    }
+    swap_words(x, sizeof *x);
+}
+
+#define FTDATA_X38_COUNT 2
+
+static void ft_x38_to_native(FighterKind kind, struct ftData_x38* x)
+{
+    size_t bytes = FTDATA_X38_COUNT * sizeof *x;
+
+    if (x == NULL) {
+        return;
+    }
+    if (!pc_hsd_in_archive(x, bytes)) {
+        not_archive(kind, "x38 bone table");
+        return;
+    }
+    if (!pc_hsd_claim(x, bytes, PC_HSD_FTX38)) {
+        return;
+    }
+    swap_words(x, bytes);
+}
+
+static void ft_camera_to_native(struct UnkFloat6_Camera* c)
+{
+    if (c == NULL || !pc_hsd_claim(c, sizeof *c, PC_HSD_FTCAMERA)) {
+        return;
+    }
+    swap_words(c, sizeof *c);
+}
+
 /* ftData::x44 -- the six bones the ECB is built from, and the four floats
  * that size it and the ledge snap.
  *
@@ -365,6 +431,32 @@ static void dynamics_to_native(FighterKind kind, struct ftDynamics* d)
     }
     swap_s32((s32*) &d->dynamicsNum);
     swap_s32((s32*) &d->x4);
+
+    /* The bone table this points at was left alone until ftdynamics.c:96
+       segfaulted in ftCo_8009CF84 on
+       `lb_8000FD48(fp->parts[bones->bone_id].joint, ..., bones->dyn_desc.count)`.
+       Both of those are big-endian in the file: bone_id indexes the fighter's
+       part table and count drives the same jobj-chain walk that the stage
+       flags tripped over, so this is the fighter-side instance of exactly the
+       stop dynamicsdata_* produced on Hyrule Castle. The descriptor itself is
+       shared code -- see pc_dynamics_desc_to_native in pc_stage_data.c. */
+    if (d->ftDynamicBones != NULL && d->dynamicsNum > 0) {
+        size_t bytes = (size_t) d->dynamicsNum *
+                       sizeof d->ftDynamicBones->array[0];
+        if (!pc_hsd_in_archive(d->ftDynamicBones, bytes)) {
+            not_archive(kind, "bone dynamics table");
+        } else {
+            int i;
+            for (i = 0; i < d->dynamicsNum; i++) {
+                BoneDynamicsDesc* b = &d->ftDynamicBones->array[i];
+                if (pc_hsd_claim(b, sizeof *b, PC_HSD_FTBONEDYN)) {
+                    swap_s32((s32*) &b->bone_id);
+                }
+                pc_dynamics_desc_to_native(&b->dyn_desc);
+            }
+        }
+    }
+
     if (d->x8 == NULL || d->x4 <= 0) {
         return;
     }
@@ -391,6 +483,53 @@ static void dynamics_to_native(FighterKind kind, struct ftDynamics* d)
  *
    Two members are not four bytes wide and are stepped around: the s16 at
    jumpaerial_unk, and the u8 at the end of the trailing ReflectDesc. */
+/* An attribute block, described as a size and a list of the members inside it
+ * that are NOT four-byte fields and so have to be stepped over.
+ *
+ * The size cannot come from the file -- nothing records it -- so it comes from
+ * the decomp's own struct for that character, which is the only place it is
+ * written down. Everything outside a hole is reversed as words, which is
+ * right because every remaining member is a float, an int, an ItemKind, a
+ * Vec2/3/4 or an ftCollisionBox, and all of those reverse the same way.
+ *
+ * Two nested descriptors account for most of the holes in practice.
+ * AbsorbDesc is an int, a Vec3 and a float -- uniformly four-byte, so it
+ * needs no hole at all. ReflectDesc is 0x20 bytes of words followed by the u8
+ * x20_behavior, so its hole is the single word that byte sits in: reversing
+ * that word would move the byte somewhere else in it.
+ */
+struct attr_hole {
+    size_t at;
+    size_t len;
+};
+
+/* The word a ReflectDesc's u8 behaviour field sits in, relative to the block
+   that contains the descriptor. */
+#define REFLECT_HOLE(at_offset)                                               \
+    { (at_offset) + offsetof(struct ReflectDesc, x20_behavior), 4 }
+
+static void ext_attr_words(void* e, size_t size, const struct attr_hole* holes,
+                           int nholes)
+{
+    unsigned char* p = (unsigned char*) e;
+    size_t pos = 0;
+    int i;
+
+    if (!pc_hsd_claim(e, size, PC_HSD_FTEXTATTR)) {
+        return;
+    }
+    for (i = 0; i < nholes; i++) {
+        swap_words(p + pos, holes[i].at - pos);
+        pos = holes[i].at + holes[i].len;
+    }
+    swap_words(p + pos, size - pos);
+}
+
+static void uniform_ext_attr(void* e, size_t size)
+{
+    ext_attr_words(e, size, NULL, 0);
+}
+
 static void ext_attr_to_native(FighterKind kind, void* e)
 {
     if (e == NULL) {
@@ -415,6 +554,87 @@ static void ext_attr_to_native(FighterKind kind, void* e)
             memcpy((unsigned char*) a + s16_at, &v, sizeof v);
         }
         swap_words((unsigned char*) a + after_s16, u8_at - after_s16);
+        break;
+    }
+    /* Characters whose whole attribute block is four-byte fields. Each of
+       these was checked member by member against its own `ft<Name>Attributes`
+       in src/melee/ft/kinds -- floats, ints, ItemKinds, Vec2/3/4 and
+       ftCollisionBox, and nothing narrower -- so the block reverses
+       uniformly and there is no offset to get wrong.
+
+       Dr Mario is in this list although its struct is not literally uniform:
+       its two odd members are `u8 pad_x0[4]` and `u8 pad_x8[4]`, four-byte
+       padding that nothing reads, so reversing them with everything else is
+       inert. That is the same call ItemCommonData's "filler" words got.
+
+       This list is deliberately short. Ice Climbers, Jigglypuff and Yoshi
+       have unnamed byte runs, Ness and Mr Game & Watch embed an AbsorbDesc or
+       ReflectDesc with a u8 behaviour field in it, and Mewtwo has both nested
+       structs and a bitfield -- which on this target is a second hazard on
+       top of byte order. Those need reading one at a time, and until then
+       no_layout says so by name rather than converting them wrongly. */
+    case FTKIND_DONKEY:
+        uniform_ext_attr(e, sizeof(ftDonkeyAttributes));
+        break;
+    case FTKIND_KOOPA:
+        uniform_ext_attr(e, sizeof(ftKoopaAttributes));
+        break;
+    case FTKIND_SEAK:
+        uniform_ext_attr(e, sizeof(ftSeakAttributes));
+        break;
+    case FTKIND_PIKACHU:
+        uniform_ext_attr(e, sizeof(ftPikachuAttributes));
+        break;
+    case FTKIND_LUIGI:
+        uniform_ext_attr(e, sizeof(ftLuigiAttributes));
+        break;
+    case FTKIND_DRMARIO:
+        uniform_ext_attr(e, sizeof(ftDrMarioAttributes));
+        break;
+    case FTKIND_PICHU:
+        uniform_ext_attr(e, sizeof(ftPichuAttributes));
+        break;
+    case FTKIND_PEACH:
+        /* Its one nested descriptor is an AbsorbDesc, which is uniform. */
+        uniform_ext_attr(e, sizeof(ftPe_DatAttrs));
+        break;
+    case FTKIND_GAMEWATCH:
+        uniform_ext_attr(e, sizeof(ftGameWatchAttributes));
+        break;
+    case FTKIND_CAPTAIN:
+    case FTKIND_GANON:
+        /* Ganondorf is Captain Falcon's clone and shares the layout. */
+        uniform_ext_attr(e, sizeof(ftCaptain_DatAttrs));
+        break;
+
+    /* One ReflectDesc each, so one hole each. */
+    case FTKIND_MARIO: {
+        static const struct attr_hole h[] = {
+            REFLECT_HOLE(offsetof(ftMario_DatAttrs, cape_reflection))
+        };
+        ext_attr_words(e, sizeof(ftMario_DatAttrs), h, 1);
+        break;
+    }
+    case FTKIND_FOX:
+    case FTKIND_FALCO: {
+        static const struct attr_hole h[] = { REFLECT_HOLE(
+            offsetof(ftFox_DatAttrs, xB0_FOX_REFLECTOR_REFLECTION)) };
+        ext_attr_words(e, sizeof(ftFox_DatAttrs), h, 1);
+        break;
+    }
+    case FTKIND_ZELDA: {
+        static const struct attr_hole h[] = {
+            REFLECT_HOLE(offsetof(ftZelda_DatAttrs, x84))
+        };
+        ext_attr_words(e, sizeof(ftZelda_DatAttrs), h, 1);
+        break;
+    }
+    case FTKIND_NESS: {
+        /* An AbsorbDesc as well, but that one is uniform and needs no hole. */
+        static const struct attr_hole h[] = {
+            REFLECT_HOLE(offsetof(ftNessAttributes, xB8_BASEBALL_BAT))
+        };
+        ext_attr_words(e, sizeof(ftNessAttributes), h, 1);
         break;
     }
     default:
@@ -521,6 +741,9 @@ static void ft_data_to_native(FighterKind kind)
     models_to_native(kind, d->x8);
     hurtboxes_to_native(kind, d->x30);
     dynamics_to_native(kind, d->x2C);
+    thrown_hitbox_to_native(d->x34);
+    ft_x38_to_native(kind, d->x38);
+    ft_camera_to_native(d->x3C);
     pickup_to_native(d->x40);
     ft_vec2_to_native(d->x50);
     ecb_source_to_native(d->x44);

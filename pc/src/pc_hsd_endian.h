@@ -15,6 +15,12 @@ int pc_hsd_in_archive(const void* data, size_t size);
    it, otherwise the PC_HSD_* value that did. For diagnostics -- it answers
    "who converted this before I got here" by name rather than by guess. */
 unsigned pc_hsd_kind_at(const void* p);
+/* Shared object schema: a DynamicsDesc is a count, a position and a
+   variable-length run of 0x3C-byte float rows behind its data pointer. Stage
+   flags reach it through a dynamicsdata_* public symbol and fighters through
+   ftData::x2C, and the layout is the same either way, so both use this. */
+struct DynamicsDesc;
+void pc_dynamics_desc_to_native(struct DynamicsDesc* d);
 /* Shared field schema: stage map_head and MObj loading both access this word. */
 void pc_hsd_mobj_flags_to_native(void* flags);
 enum { PC_HSD_POBJ = 1, PC_HSD_VERTEX, PC_HSD_ENVELOPE, PC_HSD_JOINT,
@@ -33,5 +39,6 @@ enum { PC_HSD_POBJ = 1, PC_HSD_VERTEX, PC_HSD_ENVELOPE, PC_HSD_JOINT,
        PC_HSD_FTHURT, PC_HSD_FTDYNAMICS, PC_HSD_FTEXTATTR,
        PC_HSD_STAGEPARAMS, PC_HSD_ITCOMMON, PC_HSD_ITHURT,
        PC_HSD_GRDYNAMICS, PC_HSD_FTECBSOURCE, PC_HSD_FTPICKUP,
-       PC_HSD_FTVEC2 };
+       PC_HSD_FTVEC2, PC_HSD_FTBONEDYN,
+       PC_HSD_FTX34, PC_HSD_FTX38, PC_HSD_FTCAMERA };
 #endif

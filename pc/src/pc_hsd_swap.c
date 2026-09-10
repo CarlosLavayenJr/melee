@@ -24,6 +24,7 @@
 #include "pc_hsd_archive.h"
 #include "pc_hsd_endian.h"
 
+#include <stdint.h>
 #include <stdlib.h>
 
 #include <dolphin/gx.h>
@@ -323,6 +324,18 @@ HSD_LObj* __wrap_HSD_LObjLoadDesc(HSD_LightDesc* desc)
  * byte order to get wrong. So are pointer fields, which pc_dvd.c's archive
  * relocation pass already converted.
  */
+static void log_uint(unsigned v)
+{
+    char buf[11];
+    int i = (int) sizeof buf - 1;
+    buf[i] = 0;
+    do {
+        buf[--i] = (char) (48 + v % 10);
+        v /= 10;
+    } while (v != 0 && i > 0);
+    pc_sys_log(buf + i);
+}
+
 static void swap_image_desc(struct HSD_ImageDesc* img)
 {
     if (!img || !pc_hsd_claim(img, sizeof *img, PC_HSD_IMAGE)) return;
@@ -504,4 +517,54 @@ int __wrap_lbArchiveRelocate(HSD_Archive* archive, u8* src, size_t file_size,
        delta). pc_hsd_archive_convert recognises that and does nothing. */
     convert_archive(src, file_size, "lbArchiveRelocate");
     return __real_lbArchiveRelocate(archive, src, file_size, base_addr);
+}
+
+/* HSD_TObjSetup asserts at tobj.c:1246 -- the `default:` of a switch on
+ * `imagedesc->format` -- three frames into a VS match, from the fighter
+ * display path. The assert says only "0"; it does not say what the format
+ * was, whose image it was, or whether this port ever saw the descriptor.
+ *
+ * This says all three, at the door, in the run that fails. The mark is the
+ * PC_HSD_* value from pc_hsd_endian.h: 0 for memory this port never tracked,
+ * 0x80 for a fresh archive body nothing claimed -- which would mean the
+ * schema never reached this descriptor -- and PC_HSD_IMAGE if swap_image_desc
+ * did convert it, in which case the format is wrong for some other reason and
+ * byte order is not the answer.
+ *
+ * Reading a format straight back out with swap32 tells the two apart at a
+ * glance: if the reversed value is a legal GXTexFmt and the mark is 0x80, the
+ * descriptor simply was not converted.
+ */
+void __real_HSD_TObjSetup(HSD_TObj* tobj);
+void __wrap_HSD_TObjSetup(HSD_TObj* tobj)
+{
+    if (tobj != NULL && tobj->imagedesc != NULL) {
+        unsigned f = (unsigned) tobj->imagedesc->format;
+        int known = (f == GX_TF_I4 || f == GX_TF_I8 || f == GX_TF_IA4 ||
+                     f == GX_TF_IA8 || f == GX_TF_RGB565 ||
+                     f == GX_TF_RGB5A3 || f == GX_TF_RGBA8 ||
+                     f == GX_TF_CMPR || f == GX_TF_C4 || f == GX_TF_C8 ||
+                     f == GX_TF_C14X2);
+        if (!known) {
+            static int said;
+            if (said < 4) {
+                said++;
+                pc_sys_log("pc_hsd_swap: HSD_TObjSetup was handed an image "
+                           "descriptor at ");
+                log_uint((unsigned) (uintptr_t) tobj->imagedesc);
+                pc_sys_log(" whose format reads ");
+                log_uint(f);
+                pc_sys_log("; this port's mark on it is ");
+                log_uint(pc_hsd_kind_at(tobj->imagedesc));
+                pc_sys_log(" and byte-reversing the format would give ");
+                log_uint(swap32(f));
+                pc_sys_log(", with width ");
+                log_uint(tobj->imagedesc->width);
+                pc_sys_log(" and height ");
+                log_uint(tobj->imagedesc->height);
+                pc_sys_log("\n");
+            }
+        }
+    }
+    __real_HSD_TObjSetup(tobj);
 }

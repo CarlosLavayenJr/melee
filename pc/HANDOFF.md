@@ -1,6 +1,27 @@
 # Handoff — September 10, 2026 checkpoint
 
-## Where this stands: the menus drive themselves into a VS match; the match itself does not run yet
+## Where this stands: the match now starts; it does not yet survive its first seconds
+
+**The port has executed VS match frames.** A run reached
+`gm_Scene_Vs_OnFrame` and reported `match_frames=1`, which is the first time
+any code inside a Melee match has run in this port. Getting there took two
+things: `ftData::x44`, the six bone indices the fighter's ECB is built from
+(stop 11.5, the first stop that was not stage-specific), and the resolution
+of the stage-param stop, which turned out to be a struct member that does not
+exist (stop 9).
+
+Be precise about what that is and is not. It is **one frame, in one run**, not
+a match that runs. The test asks for 400 frames and no run has come close.
+What it does establish is that the whole chain -- boot, menus, stage load,
+fighter creation, scene entry -- can complete, and that the remaining work is
+inside the match rather than in front of it.
+
+The stop after it is the item animation script (stop 13), which is the fourth
+hazard class this port has met and the first one that is not byte order at
+all. The analysis is written up there; it is a bigger piece of work than
+anything so far and it also covers fighter subaction scripts.
+
+### The old summary, kept because the route description below is still current
 
 `pc/tests/match_smoke.gdb` now takes the game from boot to
 `gm_Scene_Vs_OnEnter` without a person touching anything, through the real
@@ -146,12 +167,35 @@ Each of these is a byte-order schema, and each was found at a real line:
 7. **FIXED** `ftanim.c:1008` "fighter tobj num over!", `ftparts.c:665`
    segfault in the part-visibility walk, `ftcoll.c:3224` "fighter hit num
    over!" -- three counts in the fighter's archive. See `pc/src/pc_ft_data.c`.
-8. **PARTLY FIXED** `ftchangeparam.c:138` segfault: `fp->x2D0 = fp->dat_attrs`
-   (ftkirby.c, ftpurin.c) then a loop bounded by a count in the block. That
-   block is `ftData::ext_attr`, one layout per character, and the file does
-   not record its size -- see "Character attribute blocks" below. Kirby is
-   converted; Jigglypuff and everyone else are reported and left alone.
-9. **OPEN, and now the biggest single blocker: "not found stage param".**
+8. **MOSTLY FIXED** `ftchangeparam.c:138` segfault, and the same block again
+   at `it_26B1.c:207` -- `it_804D6D38[kind - It_Kind_Kuriboh] = article` with
+   `kind = 1392508928`, which is an ItemKind read byte-reversed out of the
+   attribute block by `ftMr_Init_OnLoad` and its equivalents. Nearly every
+   character's `ft<X>_Init_OnLoad` passes an ItemKind from `ext_attr` into
+   `it_8026B3F8`, so this is on the load path for most of the roster.
+
+   `ext_attr_words` now takes a size and a list of the members that are NOT
+   four-byte fields, and reverses everything else. Two nested descriptors
+   account for most of them: **`AbsorbDesc` is uniformly four-byte and needs
+   no hole at all**, and **`ReflectDesc` is 0x20 bytes of words then the u8
+   `x20_behavior`**, so its hole is the one word that byte sits in.
+
+   Converted: Mario, Fox, Falco, Captain Falcon, Ganondorf, Donkey Kong,
+   Kirby, Bowser, Sheik, Ness, Peach, Pikachu, Luigi, Zelda, Dr Mario,
+   Pichu and Mr Game & Watch. Dr Mario is in that list although its struct is
+   not literally uniform: its odd members are `u8 pad_xN[4]`, four-byte
+   padding nothing reads, so reversing it with the rest is inert -- the same
+   call ItemCommonData's "filler" words got.
+
+   Still reported and left alone, each for a stated reason: Ice Climbers,
+   Jigglypuff and Yoshi have unnamed byte runs; Link and Young Link have a
+   `SwordAttrs` and two `UNK_T`; Marth and Roy have a `SwordAttrs`; Samus has
+   an `UNK_T`; Mewtwo has nested structs **and a bitfield**, which on this
+   target is a second hazard on top of byte order (see stop 13).
+9. **FIXED** "not found stage param" -- `MapCollData::x2C` is an inferred
+    struct member that does not exist, and swapping it byte-reversed the
+    first word of the stage param table next door. See the section below;
+    this one cost more runs than anything else in the port.
 10. **DIAGNOSED, fix written, NOT yet observed working.** With Onett the whole
     stage comes up and the stop moves into Onett's own setup: `gronett.c:480`
     passes a NULL item to `grMaterial_801C8E08`, because the cars' spawn
@@ -195,6 +239,27 @@ Each of these is a byte-order schema, and each was found at a real line:
     other schema got there first) and the fix differs completely between
     them, so the log now names which by printing `pc_hsd_kind_at`.
 
+11.5 **FIXED** `lb_00B0.c:102`, `return jobj->parent` with `jobj` a garbage
+    pointer (0x1a1a1a1a, 0x565e522f), reached from `Fighter_Create` through
+    `mpColl_LoadECB_JObj`. `ft_80081B38` passes
+    `bones[ft_data->x44->unk0].joint` and five more like it straight into
+    `mpColl_SetECBSource_JObj`, so a byte-reversed s16 index reads a joint
+    pointer out of whatever lies past the end of the bone table.
+
+    **This one produced the port's first VS match frame.** Unlike almost
+    every stop above it, it is not stage-specific -- it is on the path every
+    fighter takes into every match, so nothing in a match could run until it
+    was fixed. Its two neighbours went in with it: `ftData::x40` (three Vec4s
+    of item-pickup offsets) and `::x50` (a Vec2), both copied wholesale into
+    the Fighter by `ftCo_800D105C`, converted for the grGroundParam reason --
+    they are all floats, floats do not fault, and they would never have
+    announced themselves.
+11.6 **FIXED** `ftdynamics.c:96` segfault in `ftCo_8009CF84`,
+    `lb_8000FD48(fp->parts[bones->bone_id].joint, ..., bones->dyn_desc.count)`.
+    `ftData::x2C->ftDynamicBones->array[]` was never converted, so both the
+    bone index and the count were big-endian. This is the fighter-side
+    instance of stop 12 below, and the descriptor conversion is now shared
+    between them -- `pc_dynamics_desc_to_native` in `pc_stage_data.c`.
 12. **FIXED** `lb_00F9.c:171` segfault, `prev->desc.lb_unk0.rotate =
     jobj->rotate` with `jobj` NULL, reached from Hyrule Castle's setup:
 
@@ -234,40 +299,83 @@ Each of these is a byte-order schema, and each was found at a real line:
     treatment is to reverse the declaration order under the port build while
     leaving the console declaration untouched.
 
-    Not fixed yet, because the fix has a prerequisite: reversing the order is
-    only correct once the u16 itself is host order, and nothing converts the
-    item animation script. The script is a variable-length command stream and
-    its extent is not recorded in the file, so that needs establishing first.
-    `it_80278F2C` reads the stream as `((u16*) cmd->u)[0]` and `((s16*)
-    cmd->u)[0]` throughout, which suggests a pure u16 stream, but that is an
-    inference from one command handler and not a survey.
+    **This is the next blocker and it is a bigger piece of work than anything
+    above, so here is the analysis rather than a guess.** It applies equally
+    to fighter subaction scripts (`Fighter_WaitAnimData::xC`), which are the
+    same kind of stream and are not converted either.
 
-### The stage-param stop: caught, after five runs of ruling suspects out
+    What is established:
 
-**The word is written by this port's own `coll_data` schema.** The tripwire
-described below caught it in the act:
+    - The stream is a sequence of **four-byte units**. `union CmdUnion`'s
+      largest member is four bytes, and every handler advances with
+      `++cmd->u`.
+    - Handlers read those units three different ways: as bitfields
+      (`cmd->u->unk0.opcode`), as whole words (`*(u32*) cmd->u` in
+      `it_8027978C`), and **as pairs of u16 or s16** (`((u16*) cmd->u)[0]`,
+      `0.003906f * ((s16*) cmd->u)[0]` in `it_80278F2C`).
 
-    pc_stage_data: stage param row 0 at 2168523248 changed from 369098752
-                   to 22 during the coll_data schema
+    That third one is what makes this hard. **No single byte swap of the
+    stream can be right**, because a 32-bit swap fixes the word reads and
+    puts the two u16 halves in the wrong order, while a 16-bit pairwise swap
+    does the reverse. A consistent answer has to be a 32-bit swap *plus*
+    flipping the u16 index at each of those read sites (file order `[0]` is
+    the high half, which after a word swap is `[1]`), *plus* reversing the
+    bitfield declaration order in every command struct.
 
-369098752 is 0x16000000, which is `St_Kind_Venom` (22) big-endian, and 22 is
-the same value host order. So this is a deliberate byte swap of that exact
-word by `pc_map_coll_to_native`, not a stray write through a bad pointer --
-which also retires the reading of the old hardware-watchpoint evidence (a
-pointer and a code address landing in that word) as belonging to something
-else, probably an earlier use of that memory.
+    The obvious alternative is GCC's
+    `__attribute__((scalar_storage_order("big-endian")))` on the command
+    structs, which handles byte order and bitfield allocation together and
+    would need no stream conversion at all. **It does not work here as-is**,
+    for two reasons worth writing down so nobody re-derives them: the raw
+    casts above bypass it entirely, and `struct Command_07` holds a
+    `union CmdUnion*` that the archive's relocation table has already turned
+    into a host-order pointer -- an SSO read would byte-swap it a second time.
 
-That it happened at all while `head_check` kept answering "in none of the
-ranges" is the useful part: `head_wrote` records the three array walks
-`pc_map_coll_to_native` makes but not the fourteen struct-field swaps it does
-first, so a write from those was invisible to the very diagnostic built to
-catch it. **A range list only exonerates what it records.**
+    There is also a prerequisite either way: **the script's extent is not
+    recorded in the file**, so a converting schema would have to walk and
+    interpret the stream to find its end, which means the schema becomes a
+    second implementation of the command decoder and has to agree with the
+    real one. That is an argument for fixing the readers rather than the
+    data.
 
-`watch_report_base` now says which block the watched word falls inside -- the
-`MapCollData` struct itself, or the vertex, line or joint array -- and
-`watch_check` is called between each phase, so the next hit names the write
-rather than the function. The offset it prints says whether a base or a count
-is wrong.
+### FIXED: the stage-param stop was a struct member that does not exist
+
+**Root cause: `MapCollData::x2C` is not a real field, and this port was
+swapping it.** `mp/types.h` marks it `/* inferred */`, nothing in the game
+reads it, and the archive proves it is not there. The tripwire caught the
+write and then said exactly where it landed:
+
+    the watched stage param word sits 44 bytes into the MapCollData struct
+    itself, which starts at 2168153272 and runs 48 bytes
+    stage param row 0 at 2168153316 changed from 184549376 to 11 during the
+    coll_data struct fields
+
+44 is 0x2C. `grGroundParam`'s `stage_params[0].stkind` **is** the word at
+`coll_data + 0x2C`. Two objects in one archive cannot overlap, so
+`MapCollData` ends at 0x2C and the next object begins there --
+`swap_s32(&d->x2C)` was reaching past the end of its own struct into its
+neighbour and byte-reversing the first word of the stage param table.
+
+Everything the stop ever showed follows from that, including the part that
+looked most like a mystery: **row 0 was always the row the stage needed**,
+because the array begins at 0x2C and row 0 is the row that gets hit. And it
+appeared on about half of stages because it needs `coll_data` and
+`grGroundParam` to be adjacent in that order, which is a per-file property.
+
+The claim now covers `offsetof(MapCollData, x2C)` rather than `sizeof`, so
+the recorded extent matches the object that is really there.
+
+Two lessons worth more than the fix:
+
+- **An inferred struct member is a hazard, not a comment.** On console a
+  four-byte over-read of a struct is invisible; a four-byte over-*write* is
+  not, and every schema in this port writes. Any `/* inferred */` tail member
+  that a schema touches deserves the same scrutiny this one got.
+- **A range list only exonerates what it records.** `head_check` answered "in
+  none of the ranges" five times running and was right every time, because
+  `head_wrote` records the three array walks `pc_map_coll_to_native` makes and
+  not the fourteen struct-field swaps that run first. The write was invisible
+  to the very diagnostic built to catch it.
 
 ### The tripwire, and why it beat five runs of range attribution
 

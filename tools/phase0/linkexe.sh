@@ -211,6 +211,7 @@ LDFLAGS="$LDFLAGS -Wl,--wrap=HSD_TObjAddAnim -Wl,--wrap=HSD_TObjAddAnimAll"
 LDFLAGS="$LDFLAGS -Wl,--wrap=HSD_ArchiveParse -Wl,--wrap=lbArchiveRelocate"
 LDFLAGS="$LDFLAGS -Wl,--wrap=psInitDataBankLocate"
 LDFLAGS="$LDFLAGS -Wl,--wrap=psInitDataBankLoad"
+LDFLAGS="$LDFLAGS -Wl,--wrap=HSD_TObjSetup"
 LDFLAGS="$LDFLAGS -Wl,--wrap=GXLoadTlut"
 # pc_input_script.c takes the live scene from gm_801A4D34 (called once per
 # scene) and its frame clock from HSD_PadRenewCopyStatus, which lb_80019900
