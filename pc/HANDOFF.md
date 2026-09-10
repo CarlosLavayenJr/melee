@@ -129,6 +129,73 @@ connected and giving `pc_input_script_poll` a port argument models a perfectly
 ordinary hardware setup and turns the character route into two independent
 cursors, each doing what the current one already does.
 
+## Playing it by hand, and why it ran at 15 fps
+
+A user played the build and reported three things. All three have concrete
+answers and two of them are not bugs.
+
+### The controls
+
+`pc_pad.c`'s `read_keyboard` is the whole mapping, port 0 only:
+
+    W A S D      control stick        arrow keys   D-pad
+    J            A                    K            B
+    L            X                    I            Y
+    U            Z                    Space        L (and analog trigger)
+    Enter        Start
+
+`PC_INPUT_SCRIPT=vs ./build/phase2/melee_host.exe`, run from the repo root
+because `game.iso` is there, drives itself through the menus into a VS match
+with no hands on the keyboard. That is worth knowing as a way to *watch* the
+route rather than fight the menus.
+
+### 15 fps: the build had no optimisation at all
+
+**`-O0`.** Not the renderer, not the logging -- a whole console game's worth
+of physics, collision, HSD scene graph and the software half of the renderer,
+compiled with optimisation off, which is typically several times slower than
+the same code at `-O2`.
+
+That was the right default for everything this port has done so far: `-O0 -g`
+is what makes a backtrace name the line something happened on rather than a
+line the optimiser moved, and every diagnosis in this file rests on that.
+It is the wrong default for playing.
+
+`tools/phase0/linkexe.sh --fast` now builds the same sources at `-O2`. `-g`
+stays, so backtraces keep their symbols and are merely less exact about
+lines. **`-fno-strict-aliasing` stays on in both modes and is not
+negotiable** -- the decomp type-puns constantly, and `-O2` without it would
+miscompile in ways that look exactly like port bugs. `CFLAGS` is part of the
+object cache stamp, so switching modes forces a full rebuild rather than
+mixing objects.
+
+### The log was also costing more than it looks
+
+Not the main cause, but worth having fixed: `pc_sys_log` was `fputs(s,
+stderr)`, and stderr is unbuffered, so every diagnostic is a syscall the
+console then renders. `pc_gx_fifo`'s "incomplete immediate primitive" alone
+accounted for 159 of the 270 lines in a 74-frame run. It now collapses
+consecutive repeats of the same message and prints the count when the message
+changes or the process exits, so **nothing is lost** -- these lines are how
+the port reports what it cannot draw, and quietly dropping them would be the
+silent-wrong-output failure the rest of the port avoids.
+
+### The menu graphics, and the CPU toggle
+
+Both come back to the same place. The renderer names every draw it drops:
+`more than four TEV stages`, `non-identity texgen`, `texcoord index beyond
+enabled texgen count`, `logic/subtract blending`, and `GXLoadTexObj:
+unsupported format (depth/copy)`. Missing menu elements are those gaps
+showing through, and they are enumerated rather than mysterious.
+
+**That is probably also why a player could not add a CPU.** The mechanism
+works -- the scripted route toggles port 2 to CPU on every run -- but the
+target is small and the thing that must be inside it is the *token*, which
+sits at cursor + (2.7, -2.0), not the hand. `mncharsel.c` wants the token's
+x between `togglebtn_left` and `togglebtn_right` and its y in
+-4.6 .. 0.2. If the toggle box itself is one of the skipped draws, a player
+is aiming at something invisible.
+
 ## The route, and why it is worth having
 
 The attract loop wandered: six different endings across runs, so a fix could

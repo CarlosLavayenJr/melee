@@ -80,25 +80,39 @@ unsigned long long pc_sys_mono_ns(void)
  * "pc_stage_data: ", a number, "\n" are three different pointers in sequence
  * and never collapse into each other.
  */
+static const char* log_last;
+static unsigned long log_repeats;
+
+static void log_flush_repeats(void)
+{
+    if (log_repeats != 0) {
+        fprintf(stderr, "  (previous line repeated %lu more times)\n",
+                log_repeats);
+        log_repeats = 0;
+    }
+}
+
 void pc_sys_log(const char* s)
 {
-    static const char* last;
-    static unsigned long repeats;
-
-    if (s == last) {
-        repeats++;
+    if (s == log_last) {
+        log_repeats++;
         return;
     }
-    if (repeats != 0) {
-        fprintf(stderr, "  (previous line repeated %lu more times)\n",
-                repeats);
-        repeats = 0;
-    }
-    last = s;
+    log_flush_repeats();
+    log_last = s;
     fputs(s, stderr);
 }
 
-void pc_sys_exit(int code) { exit(code); }
+/* Flushed here as well as on the next differing message, because a run that
+   ends while a repeat is still counting -- which is every crash and every
+   debugger-terminated test -- would otherwise lose the tail of the count, and
+   the count is the whole reason collapsing them is honest rather than a
+   suppression. */
+void pc_sys_exit(int code)
+{
+    log_flush_repeats();
+    exit(code);
+}
 
 /* Handles are returned as ints so the interface stays the same across
    backends. Win32 HANDLEs fit: a 32-bit build has 32-bit handles, and a 64-bit
