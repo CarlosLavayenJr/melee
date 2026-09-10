@@ -136,7 +136,21 @@ void __wrap_GXLoadTexObj(GXTexObj* obj, GXTexMapID id)
                 u32 words[8];
                 memcpy(words, obj, sizeof words);
                 if (pc_texture_source_size(words[5], (words[2]&1023)+1, ((words[2]>>10)&1023)+1)) {
-                    pc_sys_log("pc_gx_render: unknown native texture source\n"); pc_sys_exit(1);
+                    /* The source is a host pointer in neither game RAM nor the
+                       font atlas, so its extent is unknown and nothing here can
+                       bound a read of it. Report it and leave the slot unbound
+                       -- the draw renders untextured, loudly, which is what
+                       pc_gx_texture.c already does for a format it cannot
+                       decode. Exiting here killed the run as soon as CI
+                       formats became decodable, on a path the menu never takes
+                       but character select does. */
+                    static int warned;
+                    if (!warned) {
+                        warned = 1;
+                        pc_sys_log("pc_gx_render: native texture source of unknown extent; texture skipped\n");
+                    }
+                    __real_GXLoadTexObj(obj, id);
+                    return;
                 }
                 /* Unsupported formats are rejected before any source read;
                    preserve that precise diagnostic (e.g. native GX_TF_Z8). */

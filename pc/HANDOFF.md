@@ -1,117 +1,121 @@
 # Handoff — September 10, 2026 checkpoint
 
-## The main menu renders, background included
+## Where this stands: the menu renders and navigates; a match does not run yet
 
-`build/menu-smoke.bmp` at menu frame 120 shows the menu with its animated
-background: the five items and the selected-item highlight, the streaks, the
-rotating text ring, the SmashBrothers wordmarks and the panel. Over 240 frames
-draws accepted went 7876 -> 26482 and skips 21179 -> 2333.
+The main menu draws with its animated background -- the five items and the
+selected-item highlight, the streaks, the rotating text ring, the
+SmashBrothers wordmarks and the panel -- and the user confirms by hand that it
+boots and navigates by keyboard. Over 240 menu frames, draws accepted went
+7876 -> 27510 and skips 21179 -> 2299 across this session.
 
-Still NOT established: submenu transitions, keyboard navigation, or that any
-colour is bit-exact against console. 2333 draws are still discarded.
+NOT established: a running match, colour accuracy against console, audio,
+saves. 2299 menu draws are still discarded.
 
-### Method: rank the rejections, fix in that order, re-measure
+## Method that produced all of it: rank the rejections, then fix in that order
 
-Rejection reasons were logged once each, which notices a gap but cannot rank
-one. `pc_gx_material_report()` and `pc_gx_texture_report()` now tally accepted
-draws and each skip by reason; `pc/tests/menu_smoke.gdb` prints both. Every fix
-below was chosen off that ranking and verified against it. One was also
-*prevented* by it -- see channel 1.
+Rejection reasons used to be logged once each, which notices a gap but cannot
+rank one -- a check discarding every draw on screen looked identical to one
+discarding a single stray draw. `pc_gx_material_report()` and
+`pc_gx_texture_report()` now tally accepted draws and each skip by reason, and
+`pc/tests/menu_smoke.gdb` prints both. Keep using this. It chose every fix
+below, and twice it stopped work that would have been wasted.
 
-### What was fixed, in the order the tally chose
+### Fixed this session, in the order the tally chose
 
-1. **Post-transform texture matrices** (20743 -> 671). sysdolphin sets an
+1. **Post-transform texture matrices** (20743 skips -> 671). sysdolphin sets an
    identity 2x4 texgen (tobj.c:492) and loads the texture's whole
    scale/rotate/translate as the POST-transform matrix (tobj.c:488). On its own
    this changed nothing visible; nothing textured could be right without it.
 2. **Depth attachment** (7033 -> 0). The framebuffer had none at all.
-3. **General blend factors** (4280 -> 0). Only src-alpha/inv-src-alpha existed.
+3. **General blend factors** (4280 -> 0).
 4. **Palettized textures** (92 CI4 + 92 CI8 -> 0), through the TLUT a
    `GXLoadTlut` wrapper records.
-5. **Raster channel 1 via GX lighting** (7600 -> 0). The big one; see below.
+5. **Raster channel 1 via GX lighting** (7600 -> 0). See below.
+6. **Shape animation descriptors**, which fighters need and the menu never did.
 
-2 and 3 are pipeline/render-pass state, not shader code -- worth stating
-because it was assumed otherwise, and that assumption would have blocked both
-behind a toolchain they never needed. They did need the fixed 32-pipeline
-enumeration replaced by a 64-entry cache keyed on GX state, built on demand.
+2 and 3 are pipeline/render-pass state, NOT shader code. That was assumed
+otherwise at first, and the assumption would have blocked both behind a
+toolchain they never needed. They did need the fixed 32-pipeline enumeration
+replaced with a 64-entry cache keyed on GX state, built on demand.
 
-### Channel 1: the wrong turn the measurements prevented
+### Channel 1, and the fix that measurement prevented
 
-The obvious fix was "channel 1 is a second vertex colour, decode GX_VA_CLR1".
-Instrumenting the vertex descriptor at each rejection gave `with a vertex
-CLR1: 0, without: 5920` -- not one such draw supplies one. Channel 1 comes
-from the lighting path.
+The obvious reading -- "channel 1 is a second vertex colour, decode
+`GX_VA_CLR1`" -- is WRONG, and `pc_gx_fifo.c` already read and discarded that
+attribute, so it looked like a small change. Instrumenting the vertex
+descriptor at each rejection gave `with a vertex CLR1: 0, without: 5920`. Not
+one such draw supplies one. Channel 1 comes from GX lighting, and tallying
+rejected draws by the channel state in force gave ONE configuration for all of
+them: lit, both sources from registers, lights 2 and 3, `GX_DF_CLAMP`,
+`GX_AF_SPEC`.
 
-Tallying rejected draws by the channel state actually in force (not by
-GXSetChanCtrl call counts, which say only which configurations exist) gave a
-single configuration for all of them:
+GX lights per VERTEX, so the equation is C in `pc/src/pc_gx_light.h` beside the
+vertex expansion, where `pc/tests/gx_light_test.c` checks it against answers
+worked out by hand. It is a port of encounter/aurora's `lighting_func`
+(lib/gx/shader.cpp, MIT), credited in the header.
 
-    lit=1 amb=GX_SRC_REG mat=GX_SRC_REG lights=12
-    diff=GX_DF_CLAMP attn=GX_AF_SPEC,  normals on 5846 of 5920
+### Three of my own bugs worth remembering
 
-Two instrumentation bugs were caught and fixed on the way, each of which had
-already produced a wrong statement in this file:
-  - the colour setters recorded only channel ids below 4, missing
-    `GX_COLOR0A0`/`GX_COLOR1A1`, and so reported channel 1's material colour
-    as black. It is white.
-  - a light's `Color` field is a packed u32 `(r<<24)|(g<<16)|(b<<8)|a`
-    (GXLight.c:291), not four bytes; reading it as bytes reversed every
-    channel and made a blue light look yellow.
-That is why these numbers are worth more than the first version of them.
+Each of these had already put a wrong statement in this file or a wrong value
+on screen, and none would have been caught by looking at the picture:
 
-### How lighting is implemented
+- `GXSetChanMatColor`/`GXSetChanAmbColor` were recorded only for channel ids
+  below 4, missing `GX_COLOR0A0`/`GX_COLOR1A1` -- the ids sysdolphin uses. It
+  reported channel 1's material colour as black; it is white.
+- A light's `Color` is a packed u32 `(r<<24)|(g<<16)|(b<<8)|a`
+  (GXLight.c:291), not four bytes; reading it as bytes made a blue light yellow.
+- `GXLoadNrmMtxImm` was wrapped in `pc_gx_fifo.c` but never added to
+  linkexe.sh's wrap list, so `__real_` got a generated placeholder and
+  `__wrap_` was never called -- the normal matrix sat at identity for every lit
+  vertex. **The placeholder count caught this, not the eye: it went 34 to 35.**
+  Watch that number; a rise means a symbol is being silently stubbed.
 
-GX lights PER VERTEX, so the equation lives in C in `pc/src/pc_gx_light.h`,
-next to the vertex expansion, where `pc/tests/gx_light_test.c` checks it
-against answers worked out by hand -- rather than in SPIR-V, where nothing
-could test it without a GPU. The shader gained one input and a selector on the
-raster field it already read.
+## Current blocker: getting a match to run
 
-The equation is a port of encounter/aurora's `lighting_func`
-(lib/gx/shader.cpp, MIT), credited in the header, as this project already
-credits Aurora elsewhere. Only the measured configuration is accepted;
-`pc_gx_channel1_supported()` returns 0 for anything else and the draw is
-rejected with the existing diagnostic rather than lit approximately.
+`pc/tests/match_smoke.gdb` is the target. **Its current form is UNVERIFIED** --
+it was rewritten to drive the menus with real PADStatus input (title -> Start
+-> main menu -> VS Mode -> character select -> stage select -> match) and the
+one run of it produced no output before the session ended. Debug it before
+trusting a FAIL from it.
 
-`GXLoadNrmMtxImm` is wrapped for the normal matrix, and `GX_VA_NRM` is now
-decoded (direct and indexed) instead of skipped.
+It was rewritten because the attract-mode demo picks a different route every
+run. Observed endings, all different, all real:
 
-### Attract mode, and what the user confirmed by hand
+    pobj.c:842        vertex_buffer_size >= nb_vertex_index   (fixed: shape anim)
+    particle.c:207    psInitDataBanks: unknown version        (fixed: preload path)
+    mnevent.c:737     lb_80011E24 returns joint 0x53faa000, outside game RAM
+    mncharsel.c:2482  and :2517, character select cursor
+    cobj.c:559        HSD_CObjSetInterest with a NULL cobj, from gmtoulib.c:2643
+    pc_gx_render.c    native texture source of unknown extent (see below)
 
-The user boots the exe normally and reports the menu appears AND navigates by
-keyboard. That is the first evidence of navigation working; the automated
-smoke test only ever established 240 frames of the main menu with a scripted
-Start press, so this is a real addition to what is known.
+Driving the menus makes the route repeatable; chasing the attract loop does
+not. The three unfixed entries above are each a separate investigation and are
+probably each a descriptor schema, the same shape as every fix before them.
 
-Letting the movie run through into the attract-mode demo previously panicked
-at `particle.c:207`, "psInitDataBanks: unknown version". Cause: grdatfiles.c
-has two routes into the particle system, and the preloaded-archive one calls
-`psInitDataBankLoad` WITHOUT `psInitDataBankLocate`, so nothing converted the
-banks. Routing `map_ptcl`/`map_texg` through the
-`HSD_ArchiveGetPublicAddress` symbol hook covers both routes. After that,
-five consecutive normal runs reached the 130-second timeout with no failure.
+### One change that needs re-examining
 
-Do not read five clean runs as proof: the demo picks a stage at random and the
-panic was always stage-dependent (it was caught on `St_Kind_Zebes`). A
-diagnostic now fires if a command bank arrives without archive provenance,
-naming the address and the version it reads, so the next occurrence identifies
-itself instead of having to be traced back from the panic.
+`__wrap_GXLoadTexObj` used to `pc_sys_exit(1)` on "unknown native texture
+source": a texobj whose source is a host pointer in neither game RAM nor the
+font atlas, so its extent cannot be bounded. Adding CI format support made
+that path reachable -- previously CI returned 0 from `pc_texture_source_size`
+and fell through -- and it killed the run at character select. It now reports
+once and leaves the slot unbound, so the draw renders untextured and loudly,
+matching what `pc_gx_texture.c` already does for a format it cannot decode.
 
-Unaudited, seen in a normal run: `Cannot find symbol ainConEv_Top_matanim_joint`
-and `Cannot find symbol .` -- the second with an empty name, which suggests a
-symbol-table walk reading past its end rather than a genuinely missing symbol.
-Worth a look; it is a report, not a crash.
+That is a deliberate trade and should be revisited: the better answer is to
+know the real extent of those sources rather than to skip them. Find out which
+textures they are first.
 
-### What still gets discarded
+### What still gets discarded in the menu
 
-     871  texcoord index beyond enabled texgen count
-     741  non-identity texgen
-     594  more than four TEV stages
-     127  logic/subtract blending
+     869  texcoord index beyond enabled texgen count
+     640  non-identity texgen
+     630  more than four TEV stages
+     130  logic/subtract blending
 
-No single dominant cause remains. `non-identity texgen` is the residue the
-post-transform work did not cover -- worth recording which configurations
-those are, the same way the first 20743 were narrowed.
+No dominant cause remains. `non-identity texgen` is the residue the
+post-transform work did not cover -- narrow it by recording which
+configurations those are, exactly as the first 20743 were narrowed.
 
 Tests: gx_light_test, texture_decode_test, thp_kernel_test, stage_data_test,
 hsd_archive_test all pass. `pc/tests/bmp_to_png.py` converts a capture for
