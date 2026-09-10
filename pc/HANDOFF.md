@@ -10,16 +10,36 @@ things: `ftData::x44`, the six bone indices the fighter's ECB is built from
 of the stage-param stop, which turned out to be a struct member that does not
 exist (stop 9).
 
-Be precise about what that is and is not. It is **one frame, in one run**, not
-a match that runs. The test asks for 400 frames and no run has come close.
-What it does establish is that the whole chain -- boot, menus, stage load,
-fighter creation, scene entry -- can complete, and that the remaining work is
-inside the match rather than in front of it.
+**By the end of the session that was 73 frames**, after the camera fix below.
+Be precise about what that is and is not: 73 frames is a little over a second,
+the test asks for 400, and no run has come close to that. What it does
+establish is that the whole chain -- boot, menus, stage load, fighter
+creation, scene entry, and then a second of real physics, collision and
+rendering -- can complete, and that the remaining work is inside the match
+rather than in front of it.
 
-The stop after it is the item animation script (stop 13), which is the fourth
-hazard class this port has met and the first one that is not byte order at
-all. The analysis is written up there; it is a bigger piece of work than
-anything so far and it also covers fighter subaction scripts.
+Three stops sit in front of 400 frames right now:
+
+- **A fighter's own position going out of range at ~73 frames.** Same
+  `lbvector.c:383` assert as the camera bug, but through
+  `Camera_80030CD8`, which passes a subject's position straight in rather
+  than deriving one. So this is the fighter, not the camera.
+  `pc/tests/fighter_pos_probe.gdb` prints the position with the velocity and
+  the previous position, which separates "launched by wrong physics" from
+  "went NaN in one frame". Not yet run.
+- **The item animation script** (stop 13), the fourth hazard class and the
+  first that is not byte order at all. **Deprioritised on the user's
+  instruction to leave items for last**, and now diagnosed conclusively
+  rather than inferred.
+- **`tobj.c:1246`**, an unknown texture format, seen once. A probe is in
+  place and has not yet fired.
+
+**The route is still random and that is now the main thing holding the work
+back.** It picks a random stage and the CPU picks a random character, so no
+two runs are the same experiment. The user has asked for a fixed matchup --
+Sheik vs Fox on Pokemon Stadium -- and the groundwork is in
+`pc/tests/sss_geometry_probe.gdb`; see "Aiming the route at a named stage and
+characters" below for what is measured so far and what is left.
 
 ### The old summary, kept because the route description below is still current
 
@@ -34,6 +54,60 @@ VERIFIED: the route reaches `gm_Scene_Vs_OnEnter` and the test reports how far
 it got (`css=1 sss=1 in_match=1`). NOT established: a match that runs a single
 frame. `match_frames` is still 0 -- the stops are now inside stage and fighter
 setup, one schema at a time, which is the same grind that produced the menu.
+
+## Aiming the route at a named stage and characters
+
+The user's target is **Sheik vs Fox on Pokemon Stadium**. The value is not the
+matchup, it is that every run becomes the same experiment: at the moment the
+route takes a random stage and lets the CPU take a random character, so a fix
+and a different draw look identical in the results. That has already cost this
+port one wrong "fixed" claim.
+
+What is settled:
+
+- **Pokemon Stadium is slot 18.** `mnStageSel_Scene_OnExit` assigns
+  `mnStageSel_803F06D0[slot].xB` straight to `rules.stkind`, and
+  `St_Kind_PStadium` is 3. Slot 18's `xB` is 3 and its `x8` is 2, so it is
+  selectable with A or Start.
+- **The screen has the same open-loop shape as character select.**
+  `fn_8025A560` moves the cursor by `0.03 * stick` per frame and clamps it to
+  x in [-27, 27], y in [-19, 19], so driving into a corner and counting frames
+  out works exactly as it does on the CSS.
+- **Sheik is not directly selectable.** It is Zelda plus holding A through the
+  load. Fox vs Zelda is the cheaper first target and exercises the same code.
+
+What is measured but not yet usable, and this is the interesting part.
+`pc/tests/sss_geometry_probe.gdb` prints every slot's world position after
+calling `HSD_JObjSetupMatrix` -- which `lb_8000B1CC`, the function the game
+itself hit-tests with, does first, and which two earlier versions of this
+probe omitted and got stale root transforms for their trouble. The result:
+
+    slot  0  stkind=0x04  world=34.530056 15.699984
+    slot  2  stkind=0x05  world=34.714844 15.699984
+    slot  4  stkind=0x0d  world=34.899632 15.699984
+    slot  6  stkind=0x08  world=35.084396 15.699984
+    slot  8  stkind=0x02  world=35.269184 15.699984
+    slot 10  stkind=0x07  world=35.453972 15.699993
+
+**The six columns are 0.1848 apart and the rows are 5.6 apart.** The y spread
+is a normal screen layout; the x spread is about fifteen times too small, and
+the whole grid sits at x = 34-36 rather than around zero. Whether that is a
+real transform bug in this port -- the stage select would then look like a
+stack of icons rather than a grid -- or an animation that had not finished at
+frame 90, is **not established**, and it is worth knowing which before
+anything is built on these numbers.
+
+The way around it that does not need the answer: **measure closed loop**.
+Drive the cursor in a known pattern and log `mnStageSel_804D6CAE` each frame,
+then read the route off what actually got selected. That needs no coordinate
+mapping at all, and it is how the character-select route was built.
+
+Choosing both characters needs one more thing: **a second controller**.
+`pc_pad.c` reports only port 0 connected, and a CPU port's character cannot be
+set from another port's cursor without dragging its token. Reporting port 1
+connected and giving `pc_input_script_poll` a port argument models a perfectly
+ordinary hardware setup and turns the character route into two independent
+cursors, each doing what the current one already does.
 
 ## The route, and why it is worth having
 
