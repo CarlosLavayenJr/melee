@@ -35,6 +35,7 @@ TRACE_DVD=0
 RENDERER=0
 CLEAN=0
 OPTIMIZE=0
+BUILD_ONLY=0
 ARGS=""
 for a in "$@"; do
   case "$a" in
@@ -43,6 +44,7 @@ for a in "$@"; do
     --renderer) RENDERER=1 ;;
     --clean) CLEAN=1 ;;
     --fast) OPTIMIZE=1 ;;
+    --build-only) BUILD_ONLY=1 ;;
     *) ARGS="$ARGS $a" ;;
   esac
 done
@@ -385,6 +387,9 @@ else
   echo "  LINK FAILED — see $OUT/link.log"; head -5 "$OUT/link.log"; exit 1
 fi
 
+if [ "$BUILD_ONLY" = 1 ]; then
+  exit 0
+fi
 echo
 echo "Running (expect a crash — that is the point)..."
 if command -v gdb >/dev/null; then

@@ -1,5 +1,51 @@
 # Handoff — September 10, 2026 checkpoint
 
+## Texture-cache optimization checkpoint
+
+Fixed a concrete renderer bottleneck: `pc_gx_textures_begin_frame` used to
+destroy every image not currently bound to the eight texture slots. Static
+menu images were decoded and synchronously uploaded again every frame.
+The cache now persists across frames and evicts least-recently-used images
+only under the existing 64 MiB host/GPU budgets or 1024-entry limit. Bound
+images and images used by any draw in the current frame cannot be evicted;
+the previous frame's fence must complete before begin_frame, as before.
+Decoded pixel and sampler comparisons remain intact, including same-address
+source mutations. Unsupported features still report failures.
+
+Validation on this Windows machine:
+
+- `pc/tests/run_texture_tests.ps1 -Gpu` passed CPU decoding, eight-format
+  mipmap GPU readback, cache retention, immutable-image mutation checks,
+  pinned-image lifetime and memory-pressure eviction tests. The Vulkan
+  validation layer was unavailable; this is readback evidence, not a clean
+  validation-layer run.
+- The same 120-frame/16-texture synthetic workload needed 1,801 uploads with
+  the old cache and 16 with the fix (99.1% fewer).
+- Real rendered menu benchmark, O2 builds: old cache measured 600 menu
+  updates in 27.585 seconds (21.75 fps); fixed cache measured 600 in 2.021
+  seconds (296.87 fps). These are single uncapped local samples, not a
+  gameplay FPS guarantee or proof of correct 60 Hz pacing. Texture-load
+  totals differed between runs. During the fixed run's measured interval,
+  uploads remained at 124 (zero new uploads), using about 3.1 MB decoded
+  host pixels and 3.5 MB Vulkan allocations. No full match was validated.
+
+Reproduce from the repo root (with the locally supplied ignored game.iso):
+
+```sh
+export PATH="/c/Users/Owner/msys64/mingw32/bin:$PATH"
+CC=/c/Users/Owner/msys64/mingw32/bin/gcc.exe bash tools/phase0/linkexe.sh -m32 --renderer --fast --build-only
+PC_INPUT_SCRIPT=menu-bench ./build/phase2/melee_host.exe
+```
+
+The opt-in benchmark presses buttons to advance the intro/title, then sends
+neutral menu input, warms up 120 frames, measures 600, prints texture counters
+and exits. Unset PC_INPUT_SCRIPT for normal interactive play. `--build-only`
+is new and suppresses the build script's automatic debugger launch.
+
+This fixes repeated texture-upload stalls, not the match blockers documented
+below. A separate run again reached the existing synth.c:160 sound-header
+assert; no sound-bank, particle, bone/NaN, texgen or gameplay fix is claimed.
+
 ## Where this stands: the match now starts; it does not yet survive its first seconds
 
 **The port has executed VS match frames.** A run reached

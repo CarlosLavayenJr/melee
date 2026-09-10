@@ -18,6 +18,8 @@
  *
  *   PC_INPUT_SCRIPT=vs   title -> main menu -> VS Mode -> Melee ->
  *                        character select -> stage select -> match
+ *   PC_INPUT_SCRIPT=menu-bench   reach menu, warm up 120 frames, measure 600,
+ *                               print timing and exit; skips intro by input.
  *
  * Which scene is live comes from gm_801A4D34, which gm_1A3F.c hands the active
  * scene's own on_frame function. It is called once per SCENE, not per frame --
@@ -34,6 +36,10 @@
 #include "pc_sys.h"
 
 #include <string.h>
+#include <stdio.h>
+#ifdef PC_GX_RENDERER
+#include "pc_gx_texture.h"
+#endif
 
 #include <melee/mn/forward.h>
 #include <melee/mn/mnmain.h>
@@ -62,7 +68,8 @@ void gm_Scene_Vs_OnFrame(void);
 typedef void (*scene_fn)(void);
 static scene_fn current_scene;
 
-enum { ROUTE_NONE = 0, ROUTE_VS };
+enum { ROUTE_NONE = 0, ROUTE_VS, ROUTE_MENU_BENCH };
+static unsigned long long bench_start;
 
 static int route = -1;
 static unsigned frames;     /* frames since the current scene was entered */
@@ -269,10 +276,11 @@ static void read_route(void)
     if (!pc_sys_env("PC_INPUT_SCRIPT", buf, sizeof buf)) {
         return;
     }
-    if (!strcmp(buf, "vs")) {
-        route = ROUTE_VS;
-        pc_sys_log("pc_input_script: driving the VS route with synthetic "
-                   "controller input; no scene is overridden\n");
+    if (!strcmp(buf, "vs") || !strcmp(buf, "menu-bench")) {
+        route = !strcmp(buf, "vs") ? ROUTE_VS : ROUTE_MENU_BENCH;
+        pc_sys_log(route == ROUTE_VS ? "pc_input_script: route vs\n" :
+                                      "pc_input_script: route menu-bench\n");
+        pc_sys_log("pc_input_script: synthetic controller input; no scene is overridden\n");
         log_ptr("pc_input_script: title on_frame ",
                 (void*) gm_Scene_Title_OnFrame);
         log_ptr("pc_input_script: menu  on_frame ", (void*) mnMain_Scene_OnFrame);
@@ -292,7 +300,7 @@ void __wrap_gm_801A4D34(void (*on_frame)(void), void* info)
     if (route < 0) {
         read_route();
     }
-    if (route == ROUTE_VS) {
+    if (route != ROUTE_NONE) {
         current_scene = on_frame;
         log_ptr("pc_input_script: scene on_frame now ", (void*) on_frame);
         frames = 0;
@@ -307,7 +315,7 @@ void __wrap_gm_801A4D34(void (*on_frame)(void), void* info)
         }
     }
     __real_gm_801A4D34(on_frame, info);
-    if (route == ROUTE_VS) {
+    if (route != ROUTE_NONE) {
         current_scene = NULL;
         held = 0;
         stick_x = 0;
@@ -319,9 +327,31 @@ void __wrap_gm_801A4D34(void (*on_frame)(void), void* info)
 void __real_HSD_PadRenewCopyStatus(void);
 void __wrap_HSD_PadRenewCopyStatus(void)
 {
-    if (route == ROUTE_VS && current_scene != NULL) {
+    if (route > ROUTE_NONE && current_scene != NULL) {
         frames++;
-        if (current_scene == mnCharSel_Scene_OnFrame) {
+        if (route == ROUTE_MENU_BENCH && current_scene == mnMain_Scene_OnFrame) {
+            /* Warm caches and let the entry animation settle, then measure the
+               real menu without per-frame debugger round trips. */
+            held = 0; stick_x = 0; stick_y = 0;
+            if (frames == 120) {
+#ifdef PC_GX_RENDERER
+                pc_gx_texture_report();
+#endif
+                bench_start = pc_sys_mono_ns();
+            }
+            if (frames == 720) {
+                char buf[160];
+                unsigned long long elapsed = pc_sys_mono_ns() - bench_start;
+                snprintf(buf, sizeof buf,
+                         "MENU_BENCH: 600 frames in %llu ns (%.2f fps)\n",
+                         elapsed, 600.0e9 / (double)elapsed);
+                pc_sys_log(buf);
+#ifdef PC_GX_RENDERER
+                pc_gx_texture_report();
+#endif
+                pc_sys_exit(0);
+            }
+        } else if (current_scene == mnCharSel_Scene_OnFrame) {
             css_frame();
         } else {
             simple_frame();
@@ -335,7 +365,7 @@ void __wrap_HSD_PadRenewCopyStatus(void)
    alongside it. */
 void pc_input_script_poll(unsigned* button, signed char* sx, signed char* sy)
 {
-    if (route != ROUTE_VS) {
+    if (route <= ROUTE_NONE) {
         return;
     }
     *button |= held;

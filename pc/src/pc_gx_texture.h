@@ -35,8 +35,8 @@ int pc_gx_texture_load(unsigned slot, unsigned format, unsigned width,
    Returned resources survive the current frame. */
 int pc_gx_texture_get(unsigned slot, pc_gx_texture_binding* binding);
 
-/* Call only AFTER the previous frame fence completed. Preserves bound
-   slots across frames; frees resources no longer bound. */
+/* Call only AFTER the previous frame fence completed. Keeps immutable images
+   across frames; memory pressure evicts only completed, unbound resources. */
 void pc_gx_textures_begin_frame(void);
 /* Call while device still exists, after all frame work has completed. */
 void pc_gx_textures_shutdown(void);

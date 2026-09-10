@@ -10,6 +10,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 
 #define MAX_TEXTURES 1024
 #define MAX_TEXTURE_BYTES (64u * 1024u * 1024u)
@@ -22,12 +23,16 @@ typedef struct texture {
     unsigned char* pixels;
     size_t bytes;
     VkDeviceSize allocation_bytes;
+    unsigned long long last_used;
+    int used_this_frame;
 } texture;
 static texture* cache[MAX_TEXTURES];
 static texture* slots[8];
 static size_t cached_bytes;
 static VkDeviceSize allocated_bytes;
 static VkCommandPool upload_pool;
+static unsigned long long texture_loads, texture_uploads, texture_hits;
+static unsigned long long use_serial, texture_evictions;
 
 static void report(const char* reason);
 
@@ -98,6 +103,12 @@ static const char* const format_names[16] = {
 void pc_gx_texture_report(void)
 {
     unsigned i;
+    char buf[192];
+    snprintf(buf, sizeof buf,
+             "pc_gx_texture: loads=%llu hits=%llu uploads=%llu evictions=%llu host_bytes=%lu gpu_bytes=%llu\n",
+             texture_loads, texture_hits, texture_uploads, texture_evictions,
+             (unsigned long)cached_bytes, (unsigned long long)allocated_bytes);
+    pc_sys_log(buf);
     for (i = 0; i < 16; ++i) {
         if (!unsupported_format_counts[i]) continue;
         {
@@ -150,23 +161,50 @@ static void destroy(texture* t)
     free(t->pixels); free(t);
 }
 
-void pc_gx_textures_begin_frame(void)
+static void touch(texture* t)
 {
-    unsigned i, s;
+    t->used_this_frame = 1;
+    t->last_used = ++use_serial;
+}
+
+/* Only completed, unbound resources may be retired. A texture can have been
+   unbound since a previous draw in this frame; that draw still needs it. */
+static int evict_one(void)
+{
+    unsigned i, s, oldest = MAX_TEXTURES;
     for (i = 0; i < MAX_TEXTURES; ++i) {
-        if (!cache[i]) continue;
+        if (!cache[i] || cache[i]->used_this_frame) continue;
         for (s = 0; s < 8 && slots[s] != cache[i]; ++s) {}
         if (s != 8) continue;
-        cached_bytes -= cache[i]->bytes;
-        allocated_bytes -= cache[i]->allocation_bytes;
-        destroy(cache[i]); cache[i] = NULL;
+        if (oldest == MAX_TEXTURES || cache[i]->last_used < cache[oldest]->last_used)
+            oldest = i;
     }
+    if (oldest == MAX_TEXTURES) return 0;
+    cached_bytes -= cache[oldest]->bytes;
+    allocated_bytes -= cache[oldest]->allocation_bytes;
+    destroy(cache[oldest]); cache[oldest] = NULL;
+    ++texture_evictions;
+    return 1;
+}
+
+void pc_gx_textures_begin_frame(void)
+{
+    unsigned i;
+    /* The caller has waited for the previous frame's fence. Keep immutable
+       images cached until memory/entry pressure, instead of uploading the
+       same menu textures again on every frame. */
+    for (i = 0; i < MAX_TEXTURES; ++i)
+        if (cache[i]) cache[i]->used_this_frame = 0;
 }
 
 void pc_gx_textures_shutdown(void)
 {
+    unsigned i;
     memset(slots, 0, sizeof slots);
-    pc_gx_textures_begin_frame();
+    for (i = 0; i < MAX_TEXTURES; ++i) {
+        destroy(cache[i]); cache[i] = NULL;
+    }
+    cached_bytes = 0; allocated_bytes = 0;
     if (upload_pool) vkDestroyCommandPool(pc_vulkan_device(), upload_pool, NULL);
     upload_pool = VK_NULL_HANDLE;
 }
@@ -176,6 +214,7 @@ int pc_gx_texture_get(unsigned slot, pc_gx_texture_binding* binding)
     if (!binding) return 0;
     memset(binding, 0, sizeof *binding);
     if (slot >= 8 || !slots[slot]) return 0;
+    touch(slots[slot]);
     *binding = slots[slot]->binding;
     return 1;
 }
@@ -234,8 +273,10 @@ static int upload(texture* t, VkBufferImageCopy* regions)
                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT; /* supports diagnostic readback */
     TRY(vkCreateImage(dev, &ici, NULL, &t->binding.image));
     vkGetImageMemoryRequirements(dev, t->binding.image, &req);
-    if (req.size > MAX_TEXTURE_BYTES - allocated_bytes) {
-        report("64 MiB image allocation budget exhausted in this frame"); goto done;
+    while (req.size > MAX_TEXTURE_BYTES - allocated_bytes) {
+        if (!evict_one()) {
+            report("64 MiB image allocation budget exhausted by active textures"); goto done;
+        }
     }
     t->allocation_bytes = req.size;
     alloc.allocationSize = req.size;
@@ -309,6 +350,7 @@ int pc_gx_texture_load_tlut(unsigned slot, unsigned format, unsigned width,
     size_t src_bytes = 0, dst_bytes = 0, offset = 0;
     unsigned w = width, h = height, m, i, empty = MAX_TEXTURES;
     texture* t;
+    ++texture_loads;
     if (slot >= 8) { report("invalid texture slot"); return -1; }
     slots[slot] = NULL; /* Never leave a previous texture bound after failure. */
     if (!source || !sampler || sampler->pNext || sampler->anisotropyEnable ||
@@ -362,13 +404,22 @@ int pc_gx_texture_load_tlut(unsigned slot, unsigned format, unsigned width,
             c->binding.levels == levels && c->bytes == dst_bytes &&
             !memcmp(&c->sampler_key, sampler, sizeof *sampler) &&
             !memcmp(c->pixels, t->pixels, dst_bytes)) {
+            ++texture_hits;
+            touch(c);
             slots[slot] = c; destroy(t); return 0;
         }
     }
-    if (empty == MAX_TEXTURES || dst_bytes > MAX_TEXTURE_BYTES - cached_bytes) {
-        report("texture cache full in this frame"); destroy(t); return -1;
+    while (empty == MAX_TEXTURES || dst_bytes > MAX_TEXTURE_BYTES - cached_bytes) {
+        if (!evict_one()) {
+            report("texture cache full with active textures"); destroy(t); return -1;
+        }
+        if (empty == MAX_TEXTURES)
+            for (i = 0; i < MAX_TEXTURES; ++i)
+                if (!cache[i]) { empty = i; break; }
     }
     if (upload(t, regions)) { destroy(t); return -1; }
+    ++texture_uploads;
+    touch(t);
     cache[empty] = slots[slot] = t;
     cached_bytes += dst_bytes; allocated_bytes += t->allocation_bytes;
     return 0;

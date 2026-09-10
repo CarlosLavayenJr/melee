@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <windows.h>
 
 static VkInstance instance;
 static VkDevice device;
@@ -165,6 +166,74 @@ static void readback(pc_gx_texture_binding t, const unsigned char* expected, siz
     vkDestroyBuffer(device, buffer, NULL); vkFreeMemory(device, memory, NULL);
 }
 
+static void retention_test(VkSamplerCreateInfo* sampler)
+{
+    unsigned char src[32], expected[128];
+    pc_gx_texture_binding saved[16], current;
+    unsigned i, frame;
+    LARGE_INTEGER start, end, frequency;
+    QueryPerformanceFrequency(&frequency);
+    QueryPerformanceCounter(&start);
+    for (frame = 0; frame < 120; ++frame) {
+        pc_gx_textures_begin_frame(); /* uploads/readbacks here are synchronous */
+        for (i = 0; i < 16; ++i) {
+            memset(src, i + 20, sizeof src);
+            assert(!pc_gx_texture_load(0, 1, 8, 4, 1, src, sizeof src, sampler));
+            assert(pc_gx_texture_get(0, &current));
+            if (frame == 0) saved[i] = current;
+#ifndef PC_TEXTURE_BASELINE
+            else assert(current.image == saved[i].image);
+#endif
+        }
+    }
+    QueryPerformanceCounter(&end);
+    printf("CACHE_BENCH: 120 frames x 16 textures in %.3f ms\n",
+           (double)(end.QuadPart-start.QuadPart)*1000.0/frequency.QuadPart);
+    pc_gx_texture_report();
+#ifndef PC_TEXTURE_BASELINE
+    /* The same source address now contains different pixels. The old image
+       must remain readable for previously recorded draws. */
+    memset(src, 200, sizeof src);
+    assert(!pc_gx_texture_load(0, 1, 8, 4, 1, src, sizeof src, sampler));
+    assert(pc_gx_texture_get(0, &current));
+    assert(current.image != saved[0].image);
+    for (i = 0; i < 32; ++i) {
+        expected[4*i] = expected[4*i+1] = expected[4*i+2] = 20;
+        expected[4*i+3] = 20; /* GX intensity also supplies alpha. */
+    }
+    readback(saved[0], expected, sizeof expected);
+    puts("PASS: unbound textures survive 120 frames; reused source addresses do not stale-cache");
+#endif
+    pc_gx_textures_shutdown();
+}
+
+#ifndef PC_TEXTURE_BASELINE
+static void pressure_test(VkSamplerCreateInfo* sampler)
+{
+    unsigned char* src = malloc(512*512*4);
+    unsigned char* rgba = malloc(512*512*4);
+    pc_gx_texture_binding pinned;
+    unsigned i;
+    assert(src && rgba);
+    memset(src, 7, 512*512*4);
+    assert(!pc_gx_texture_load(1, 6, 512, 512, 1, src, 512*512*4, sampler));
+    assert(pc_gx_texture_get(1, &pinned));
+    assert(!pc_texture_decode(6, 512, 512, src, 512*512*4, rgba, 512*512*4));
+    for (i = 10; i < 90; ++i) {
+        memset(src, i, 512*512*4);
+        if (pc_gx_texture_load(0, 6, 512, 512, 1, src, 512*512*4, sampler)) break;
+    }
+    assert(i > 10 && i < 90); /* bounded even if every image is in-flight */
+    readback(pinned, rgba, 512*512*4);
+    pc_gx_textures_begin_frame();
+    assert(!pc_gx_texture_load(0, 6, 512, 512, 1, src, 512*512*4, sampler));
+    readback(pinned, rgba, 512*512*4); /* still bound: cannot evict it */
+    free(src); free(rgba);
+    pc_gx_textures_shutdown();
+    puts("PASS: memory pressure rejects active eviction, then retires completed unbound images");
+}
+#endif
+
 int main(void)
 {
     unsigned char src[512], expected[9*5*4+4*2*4+2*1*4+4];
@@ -181,6 +250,10 @@ int main(void)
     sampler.addressModeV = VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
     sampler.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     sampler.maxLod = 3;
+    retention_test(&sampler);
+#ifndef PC_TEXTURE_BASELINE
+    pressure_test(&sampler);
+#endif
     for (i = 0; i < sizeof src; ++i) src[i] = (unsigned char)(i*13 + 7);
     for (f = 0; f < sizeof formats / sizeof *formats; ++f) {
         w = 9; h = 5; source_bytes = rgba_bytes = 0;
