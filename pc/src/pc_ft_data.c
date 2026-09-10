@@ -508,14 +508,15 @@ struct attr_hole {
 #define REFLECT_HOLE(at_offset)                                               \
     { (at_offset) + offsetof(struct ReflectDesc, x20_behavior), 4 }
 
-static void ext_attr_words(void* e, size_t size, const struct attr_hole* holes,
-                           int nholes)
+static void words_with_holes(void* e, size_t size,
+                             const struct attr_hole* holes, int nholes,
+                             unsigned kind)
 {
     unsigned char* p = (unsigned char*) e;
     size_t pos = 0;
     int i;
 
-    if (!pc_hsd_claim(e, size, PC_HSD_FTEXTATTR)) {
+    if (e == NULL || !pc_hsd_claim(e, size, kind)) {
         return;
     }
     for (i = 0; i < nholes; i++) {
@@ -523,6 +524,37 @@ static void ext_attr_words(void* e, size_t size, const struct attr_hole* holes,
         pos = holes[i].at + holes[i].len;
     }
     swap_words(p + pos, size - pos);
+}
+
+static void ext_attr_words(void* e, size_t size, const struct attr_hole* holes,
+                           int nholes)
+{
+    words_with_holes(e, size, holes, nholes, PC_HSD_FTEXTATTR);
+}
+
+/* ftData::x4C_sfx -- the fighter's sound-effect id table, read the moment a
+   fighter makes any noise (`fp->ft_data->x4C_sfx->x30` in fighter.c:2599).
+   Twelve ints and two FtSFXArr pointers, and the pointers are the holes: the
+   archive's relocation table has already turned those into host-order
+   addresses, so reversing them would break what it fixed. */
+static void ft_sfx_to_native(struct FtSFX* s)
+{
+    static const struct attr_hole holes[] = {
+        { offsetof(struct FtSFX, smash), 4 },
+        { offsetof(struct FtSFX, x20), 4 },
+    };
+    words_with_holes(s, sizeof *s, holes, 2, PC_HSD_FTSFX);
+}
+
+/* ftData::x58 -- three {u8, u8, pad, f32} records read by ft_0899.c for
+   inverse kinematics leg lengths. Only the three floats have a byte order;
+   the single bytes and the padding between them do not, so they are holes. */
+static void ft_x58_to_native(struct ftData_x58_t* x)
+{
+    static const struct attr_hole holes[] = {
+        { 0x00, 4 }, { 0x08, 4 }, { 0x10, 8 },
+    };
+    words_with_holes(x, sizeof *x, holes, 3, PC_HSD_FTX58);
 }
 
 static void uniform_ext_attr(void* e, size_t size)
@@ -741,6 +773,8 @@ static void ft_data_to_native(FighterKind kind)
     models_to_native(kind, d->x8);
     hurtboxes_to_native(kind, d->x30);
     dynamics_to_native(kind, d->x2C);
+    ft_sfx_to_native(d->x4C_sfx);
+    ft_x58_to_native(d->x58);
     thrown_hitbox_to_native(d->x34);
     ft_x38_to_native(kind, d->x38);
     ft_camera_to_native(d->x3C);

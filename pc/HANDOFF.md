@@ -338,6 +338,53 @@ Each of these is a byte-order schema, and each was found at a real line:
     real one. That is an argument for fixing the readers rather than the
     data.
 
+### The two stops that are live right now, inside the match
+
+Both of these appear *after* `gm_Scene_Vs_OnFrame` has run, so they are the
+first bugs this port has met that are in a running match rather than in front
+of one. Neither is diagnosed; both have a probe in place.
+
+**`lbvector.c:383`**, `HSD_ASSERT(pos3d->x>-50000.0F&&pos3d->x<50000.0F)`, at
+2-3 match frames, reached from a fighter being drawn:
+
+    lbVector_WorldToScreen  <- Camera_80030BBC <- Camera_80030CFC(cam_box, 15)
+                            <- ftLib_80086A8C  <- ftDrawCommon_80080E18
+
+`Camera_80030CFC` normalizes a direction and scales it by
+`cam_box->ext.v.z + tolerance`, so one large float in the fighter's camera box
+produces an astronomical position. The box is built by `ftCamera_80076064`
+from three things: `ft_data->x3C` (converted as of this checkpoint),
+`Stage_GetCamFixedZoom()` (from grGroundParam, converted) and `fp->cur_pos`.
+**`fp->cur_pos` is the one nothing here has looked at** -- the spawn position
+comes down from `fn_8016E2BC` into `Fighter_Create`, and where it is read from
+the stage has not been traced. That is the next thing to check.
+
+`pc/tests/camera_box_probe.gdb` drives the same route and prints the camera
+box, the tolerance, the range and both intermediate vectors at the moment of
+the refusal. **Its breakpoint carries the assert's own condition, negated**,
+and that detail is the whole reason it works: the first version broke on
+`lbvector.c:383` unconditionally, and an `HSD_ASSERT` line is evaluated on
+every call, so it stopped on a perfectly healthy call from a different caller
+whose frame had no `cam_box` in it. A line breakpoint on an assert is not a
+breakpoint on the assert failing.
+
+Worth ruling in or out first, because it is cheap: `Ground_801C28CC` fills
+`stage_info.xA0` with `((s16*) stage_info.param)[53 + j] * ((s16*) param)[13 + j]`
+for 35 j. Both operands are s16 arrays and both **are** converted as s16 --
+`GroundParam::x6A` is s16 index 53 exactly, and `StageParam::x1A` is s16 index
+13 exactly -- so that path looks right, but it is the obvious place for a
+stage-supplied position to come from and the arithmetic is worth confirming
+against a real row rather than by reading offsets.
+
+**`tobj.c:1246`**, the `default:` of a switch over `imagedesc->format`, at 3
+match frames, from `HSD_MObjSetup` in the fighter display path. The assert
+says only "0" -- not the format, not whose image it was, not whether this port
+ever saw the descriptor. `__wrap_HSD_TObjSetup` in `pc/src/pc_hsd_swap.c` now
+reports all four, including `pc_hsd_kind_at` on the descriptor, which
+separates "the schema never reached this" (mark 0x80) from "the schema
+converted it and the format is still wrong" (mark PC_HSD_IMAGE). That build
+is in; the line has not yet appeared in a run.
+
 ### FIXED: the stage-param stop was a struct member that does not exist
 
 **Root cause: `MapCollData::x2C` is not a real field, and this port was
