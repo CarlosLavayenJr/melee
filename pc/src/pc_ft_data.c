@@ -35,6 +35,7 @@
 #include <stddef.h>
 #include <string.h>
 
+#include <melee/ft/dobjlist.h>
 #include <melee/ft/fighter.h>
 #include <melee/ft/ftdata.h>
 #include <melee/ft/forward.h>
@@ -137,6 +138,151 @@ static void moves_to_native(struct Fighter_WaitAnimData* a, int count,
     }
 }
 
+/* One part-visibility table: model_num entries, each a count and a run of
+   {count, u8 indices} records. Only the two counts are words; the index runs
+   are bytes and stay as they are. Byte-reversed, the outer count sent
+   ftParts_80074D7C indexing dobj_list->data with whatever bytes followed, and
+   HSD_DObjSetFlags segfaulted on a dobj of 0x8000000 (ftparts.c:665).
+
+   The same table is shared between costumes -- vis_table[c][s] falls back to
+   vis_table[0][s] -- so pc_hsd_claim is what keeps it from being converted
+   twice. */
+static void vis_lookup_to_native(FighterKind kind, FtPartsVisLookup* lk,
+                                 u32 model_num)
+{
+    u32 i;
+    int j;
+
+    if (lk == NULL || model_num == 0) {
+        return;
+    }
+    if (!pc_hsd_in_archive(lk, (size_t) model_num * sizeof *lk)) {
+        not_archive(kind, "part visibility table");
+        return;
+    }
+    if (!pc_hsd_claim(lk, (size_t) model_num * sizeof *lk, PC_HSD_FTVIS)) {
+        return;
+    }
+    for (i = 0; i < model_num; i++) {
+        swap_s32((s32*) &lk[i].x0);
+        if (lk[i].x4 == NULL || lk[i].x0 <= 0) {
+            continue;
+        }
+        if (!pc_hsd_in_archive(lk[i].x4,
+                               (size_t) lk[i].x0 * sizeof *lk[i].x4)) {
+            not_archive(kind, "part visibility run");
+            continue;
+        }
+        if (!pc_hsd_claim(lk[i].x4, (size_t) lk[i].x0 * sizeof *lk[i].x4,
+                          PC_HSD_FTVISRUN)) {
+            continue;
+        }
+        for (j = 0; j < lk[i].x0; j++) {
+            swap_s32((s32*) &lk[i].x4[j].x0);
+        }
+    }
+}
+
+/* ftData+0x08: the model description. Two words, and behind the second a
+   per-costume list of the texture objects a costume swaps.
+
+   ftAnim_80070200 (ftanim.c:1008) reported "fighter tobj num over!" and
+   asserted on the count, which is x8.x8 -- byte-reversed it is enormous
+   against an array of 32. The ids that follow it are u16 and are what
+   ftParts_80075240 is handed, so they reverse too. There is one list per
+   costume, and the number of costumes is compiled in
+   (CostumeListsForeachCharacter), not in the file. */
+static void models_to_native(FighterKind kind, struct ftData_x8* m)
+{
+    int costumes = (int) CostumeListsForeachCharacter[kind].numCostumes;
+    int c, i, count;
+
+    if (m == NULL || !pc_hsd_claim(m, sizeof *m, PC_HSD_FTMODELS)) {
+        return;
+    }
+    m->x0.model_num = swap32(m->x0.model_num);
+    m->x8.x8 = swap32(m->x8.x8);
+    count = (int) m->x8.x8;
+
+    /* vis_table is one row of four pointers per costume; each names a
+       part-visibility table with model_num entries. */
+    if (m->x0.vis_table != NULL && costumes > 0 &&
+        pc_hsd_in_archive(m->x0.vis_table,
+                          (size_t) costumes * 4 * sizeof(void*)))
+    {
+        for (c = 0; c < costumes; c++) {
+            for (i = 0; i < 4; i++) {
+                vis_lookup_to_native(kind,
+                                     (FtPartsVisLookup*) m->x0.vis_table[c][i],
+                                     m->x0.model_num);
+            }
+        }
+    }
+
+    if (m->x8.xC == NULL || count <= 0 || costumes <= 0) {
+        return;
+    }
+    if (!pc_hsd_in_archive(m->x8.xC, (size_t) costumes * sizeof *m->x8.xC)) {
+        not_archive(kind, "costume texture-object lists");
+        return;
+    }
+    for (c = 0; c < costumes; c++) {
+        u16* ids = m->x8.xC[c];
+        if (ids == NULL) {
+            continue;
+        }
+        if (!pc_hsd_claim(ids, (size_t) count * sizeof *ids,
+                          PC_HSD_FTTOBJIDS)) {
+            continue;
+        }
+        for (i = 0; i < count; i++) {
+            ids[i] = (u16) ((ids[i] >> 8) | (ids[i] << 8));
+        }
+    }
+}
+
+/* ftData+0x30: the hurtboxes, a count and that many ftHurtboxInit. Every
+   member of one is four bytes -- two enums, a u32, two Vec3s and a float --
+   so the whole run reverses uniformly. ftColl_8007B320 (ftcoll.c:3224)
+   reported "fighter hit num over!" on the count, which it checks against 15.
+
+   ftData+0x2C is the dynamics, reached in the same function: a second count
+   (x4) and that many ftData_x38, which is an int and four floats. The bone
+   list at +0 is left alone -- ArticleDynamicBones is not described well enough
+   here to convert, and nothing has faulted in it yet. */
+static void hurtboxes_to_native(FighterKind kind, struct ftData_x30* h)
+{
+    if (h == NULL || !pc_hsd_claim(h, sizeof *h, PC_HSD_FTHURT)) {
+        return;
+    }
+    swap_s32((s32*) &h->count);
+    if (h->inits == NULL || h->count <= 0) {
+        return;
+    }
+    if (!pc_hsd_in_archive(h->inits, (size_t) h->count * sizeof *h->inits)) {
+        not_archive(kind, "hurtbox table");
+        return;
+    }
+    swap_words(h->inits, (size_t) h->count * sizeof *h->inits);
+}
+
+static void dynamics_to_native(FighterKind kind, struct ftDynamics* d)
+{
+    if (d == NULL || !pc_hsd_claim(d, sizeof *d, PC_HSD_FTDYNAMICS)) {
+        return;
+    }
+    swap_s32((s32*) &d->dynamicsNum);
+    swap_s32((s32*) &d->x4);
+    if (d->x8 == NULL || d->x4 <= 0) {
+        return;
+    }
+    if (!pc_hsd_in_archive(d->x8, (size_t) d->x4 * sizeof *d->x8)) {
+        not_archive(kind, "dynamics table");
+        return;
+    }
+    swap_words(d->x8, (size_t) d->x4 * sizeof *d->x8);
+}
+
 /* PlCo.dat's "ftLoadCommonData" block: 23 relocated pointers to the tables
    every fighter shares (Fighter_LoadCommonData copies them out one by one).
    Three of them are converted here, and the other twenty are NOT -- they will
@@ -232,6 +378,9 @@ static void ft_data_to_native(FighterKind kind)
 
     moves_to_native(d->xC, ftData_Table_Unk0[kind].count, PC_HSD_FTMOVES);
     moves_to_native(d->x14, ftData_UnkIntPairs[kind].count, PC_HSD_FTDEMOMOVES);
+    models_to_native(kind, d->x8);
+    hurtboxes_to_native(kind, d->x30);
+    dynamics_to_native(kind, d->x2C);
 }
 
 /* ftdata.c loads the archive and fills gFtDataList[kind] here, and does it

@@ -239,6 +239,24 @@ void pc_stage_head_to_native(UnkStageDat* d)
             }
             swap_s32(&e->unk24);
             swap_s32((s32*) &e->x30);
+            /* check_array only asks whether a walk stays inside the archive,
+               and the archive is megabytes -- so a count that is wrong but
+               not absurd walks over other objects in it and corrupts them
+               quietly. These two are small tables in every stage seen so far;
+               anything near a thousand entries means the field is not what
+               this schema thinks it is, and the walk has to stop and say so
+               rather than rewrite whatever follows. */
+            if (e->unk24 < 0 || e->unk24 > 1024 || e->x30 < 0 ||
+                e->x30 > 1024) {
+                pc_sys_log("pc_stage_data: map entry ");
+                log_uint((u32) i);
+                pc_sys_log(" has implausible counts unk24=");
+                log_uint((u32) e->unk24);
+                pc_sys_log(" x30=");
+                log_uint((u32) e->x30);
+                pc_sys_log("; not walking them\n");
+                continue;
+            }
             if (e->unk20 != NULL && e->unk24 != 0) {
                 s32 k;
                 check_array(e->unk20, e->unk24, sizeof e->unk20[0],
