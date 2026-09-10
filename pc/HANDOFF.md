@@ -18,7 +18,23 @@ creation, scene entry, and then a second of real physics, collision and
 rendering -- can complete, and that the remaining work is inside the match
 rather than in front of it.
 
-Three stops sit in front of 400 frames right now:
+The stops are diversifying, which is itself the signal that the match is
+getting real work done. A six-run tally at this checkpoint drew five different
+ones, where a few hours earlier every run stopped in the same place. Two are
+newly seen and undiagnosed:
+
+- **`synth.c:160`**, `HSD_SynthSFXHeaderLoadCallback` with `addr=0x0` and
+  `length=0` -- a sound-effect header load that returned nothing. Twice in
+  six runs, both before the match started.
+- **`particle.c:330`**, a segfault in `psInitDataBank` with `bank=32` and a
+  cmdBank at 0x80972ca0, which is heap rather than archive memory. Worth
+  noting that **this is the path `--wrap` cannot reach**: `psInitDataBank`
+  calls `psInitDataBankLocate` from inside particle.c, so the port's Locate
+  wrapper never runs for it. The banks the stage path uses come through the
+  public-symbol hook instead, but an effect DAT loaded into the heap has
+  neither.
+
+The stops in front of 400 frames:
 
 - **A fighter's camera bone position going NaN at ~73 frames**, and the probe
   has already narrowed it a long way. Same `lbvector.c:383` assert as the
@@ -51,8 +67,25 @@ Three stops sit in front of 400 frames right now:
   first that is not byte order at all. **Deprioritised on the user's
   instruction to leave items for last**, and now diagnosed conclusively
   rather than inferred.
-- **`tobj.c:1246`**, an unknown texture format, seen once. A probe is in
-  place and has not yet fired.
+- **`tobj.c:1246`**, an unknown texture format. **The probe has fired and the
+  answer is unambiguous:**
+
+      HSD_TObjSetup was handed an image descriptor at 2167892044 whose format
+      reads 234881024; this port's mark on it is 128 and byte-reversing the
+      format would give 14, with width 24576 and height 18432
+
+  234881024 is 0x0E000000, and reversed that is 14 -- `GX_TF_CMPR`, a
+  perfectly ordinary format. The dimensions agree: 24576 is 0x6000 which
+  reverses to 96, and 18432 is 0x4800 which reverses to 72. A 96x72 CMPR
+  texture.
+
+  **The mark is the important number: 128 is 0x80**, which means the memory
+  is a tracked archive body that **no schema ever claimed**. So this is not
+  "converted and still wrong", it is "the image schema never reached this
+  descriptor" -- which is a completely different fix. `swap_image_desc`
+  converts descriptors as the model tree is walked, so the question is what
+  path hands out a TObj whose `imagedesc` that walk never visits. The address
+  is 0x813650CC, well inside archive memory.
 
 **The route is still random and that is now the main thing holding the work
 back.** It picks a random stage and the CPU picks a random character, so no

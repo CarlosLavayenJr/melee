@@ -342,6 +342,75 @@ static void ft_vec2_to_native(Vec2* v)
     swap_words(v, sizeof *v);
 }
 
+/* ftData::x24 -- the wait-animation weight table.
+ *
+ * Found at `ftwaitanim.c:93`, a segfault on
+ * `fp->x3E4_fighterCmdScript.u = anim->xC` about 74 frames into a match, with
+ * `anim = &fp->x24[temp]` and `temp` coming from `getAnimID`:
+ *
+ *     while (wait_data->u.i.x != -1) {
+ *         count += wait_data->u.i.y;
+ *         if (max <= count) return wait_data->u.p.x;
+ *         wait_data += 1;
+ *     }
+ *
+ * a -1-terminated list of (animation id, weight) int pairs, walked with a
+ * random roll. Byte-reversed, the weights never reach the roll and the id
+ * that eventually comes back subscripts the fighter's animation array with
+ * something enormous. It takes about a second of match time to fire because
+ * it only runs when a fighter's current animation finishes.
+ *
+ * The terminator is what makes the extent safe to discover: -1 is
+ * 0xFFFFFFFF, the same word whichever way round its bytes are, so the walk
+ * can find the end of the table before or after converting an entry and get
+ * the same answer. The archive check and the cap are still there, because a
+ * table whose terminator was lost would otherwise walk until it faulted.
+ *
+ * Only x24 is converted. ftData::x28 is typed `WaitStruct*` too and may well
+ * be a second table of the same shape, but nothing has reached it yet, and
+ * converting a block on the strength of its type rather than a line that
+ * failed is how this file would start corrupting things it has not seen.
+ */
+#define WAIT_ANIM_MAX 256
+
+static void wait_anim_to_native(FighterKind kind, void* p)
+{
+    struct WaitAnimEntry {
+        s32 anim_id;
+        s32 weight;
+    }* e = (struct WaitAnimEntry*) p;
+    int i;
+
+    if (e == NULL) {
+        return;
+    }
+    if (!pc_hsd_in_archive(e, sizeof *e)) {
+        not_archive(kind, "wait animation table");
+        return;
+    }
+    /* Marks the first word only, so this is idempotent without knowing how
+       long the table is. */
+    if (!pc_hsd_claim(e, sizeof *e, PC_HSD_FTWAITANIM)) {
+        return;
+    }
+    for (i = 0; i < WAIT_ANIM_MAX; i++) {
+        if (!pc_hsd_in_archive(&e[i], sizeof e[i])) {
+            not_archive(kind, "wait animation table");
+            return;
+        }
+        if (e[i].anim_id == -1) {
+            return;
+        }
+        swap_s32(&e[i].anim_id);
+        swap_s32(&e[i].weight);
+    }
+    pc_sys_log("pc_ft_data: fighter ");
+    log_uint((u32) kind);
+    pc_sys_log("'s wait animation table has no terminator in ");
+    log_uint(WAIT_ANIM_MAX);
+    pc_sys_log(" entries\n");
+}
+
 /* Three more small blocks hanging off ftData, all of them four-byte fields
  * throughout and all of them reached on the way into a match.
  *
@@ -773,6 +842,7 @@ static void ft_data_to_native(FighterKind kind)
     models_to_native(kind, d->x8);
     hurtboxes_to_native(kind, d->x30);
     dynamics_to_native(kind, d->x2C);
+    wait_anim_to_native(kind, d->x24);
     ft_sfx_to_native(d->x4C_sfx);
     ft_x58_to_native(d->x58);
     thrown_hitbox_to_native(d->x34);
