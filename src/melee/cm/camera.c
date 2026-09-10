@@ -917,12 +917,35 @@ void Camera_ApplyQuake(CameraBounds* bounds, CameraTransformState* state)
     f32 input_x;
     f32 input_y;
     f32 depth_ratio;
+#ifdef MUST_MATCH
     struct CameraStaticData {
         CameraModeCallbacks callbacks;
         HSD_WObjDesc interest;
         HSD_WObjDesc eyepos;
         HSD_CameraDescPerspective desc;
     }* data = (struct CameraStaticData*) &cm_803BCB18;
+#define CAM_DESC (data->desc)
+#else
+    /* cm_803BCB18, cm_803BCB3C, cm_803BCB50 and cm_803BCB64 are four separate
+       statics that the console linker happened to place end to end -- 0x24,
+       0x14, 0x14, 0x38 bytes, exactly the struct above -- so MWCC could reach
+       the camera description through the first of them. GCC aligns each one
+       independently, and `data->desc` then reads whatever lies past the
+       callbacks.
+     *
+       That is not a quiet difference here. `viewport.xmax - viewport.xmin`
+       came out zero, so viewport_x_scale and viewport_y_scale were both
+       infinite, and with no camera-shake input the products below are
+       `0 * inf` -- NaN. It went straight into game_camera.translation, from
+       there into the camera's eye position and interest, and finally into
+       lbVector_WorldToScreen, which refused the position and asserted three
+       frames into every match. The z components stayed correct throughout,
+       which is what made the assert look like a fighter problem rather than
+       a camera one.
+     *
+       Sixth instance of this hazard in the port; see pc/HANDOFF.md. */
+#define CAM_DESC (cm_803BCB64)
+#endif
 
     input_x = game_camera.quake_offset.x * game_camera.quake_scale;
     input_y = game_camera.quake_offset.y * game_camera.quake_scale;
@@ -939,12 +962,12 @@ void Camera_ApplyQuake(CameraBounds* bounds, CameraTransformState* state)
     half_view_height =
         bounds->z_pos * tanf(0.5f * (0.017453292f * state->fov));
     viewport_x_scale =
-        data->desc.aspect *
+        CAM_DESC.aspect *
         (half_view_height /
-         (0.5f * (f32) (data->desc.viewport.xmax - data->desc.viewport.xmin)));
+         (0.5f * (f32) (CAM_DESC.viewport.xmax - CAM_DESC.viewport.xmin)));
     viewport_y_scale =
         half_view_height /
-        (0.5f * (f32) (data->desc.viewport.ymax - data->desc.viewport.ymin));
+        (0.5f * (f32) (CAM_DESC.viewport.ymax - CAM_DESC.viewport.ymin));
     depth_factor_y = Stage_GetCamZoomRate();
     depth_factor_x = Stage_GetCamMaxDepth() - depth_factor_y;
 
@@ -964,6 +987,7 @@ void Camera_ApplyQuake(CameraBounds* bounds, CameraTransformState* state)
     game_camera.quake_offset.x = 0.0f;
     game_camera.quake_offset.y = 0.0f;
 }
+#undef CAM_DESC
 
 void Camera_SetQuakeOffset(f32 x, f32 y)
 {

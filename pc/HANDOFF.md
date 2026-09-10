@@ -380,6 +380,53 @@ Both of these appear *after* `gm_Scene_Vs_OnFrame` has run, so they are the
 first bugs this port has met that are in a running match rather than in front
 of one. Neither is diagnosed; both have a probe in place.
 
+**`lbvector.c:383` is FIXED, and it was the adjacent-globals hazard for the
+sixth time.** Two probes ran it down in three steps. The first showed the
+camera box handed to `Camera_80030CFC` was healthy and that the NaN arrived
+through `sp38`. The second printed the camera's own vectors:
+
+    eye_pos                 = nan nan 1000.000000
+    interest                = nan nan 0.000000
+    game_camera.translation = nan nan
+
+The z components are right (1000, and 0) and only x and y are NaN, which
+places the fault in `game_camera.translation` -- the camera's pan -- and
+nowhere near a fighter. `Camera_ApplyQuake` computes it, and it opens with:
+
+    struct CameraStaticData {
+        CameraModeCallbacks callbacks;
+        HSD_WObjDesc interest;
+        HSD_WObjDesc eyepos;
+        HSD_CameraDescPerspective desc;
+    }* data = (struct CameraStaticData*) &cm_803BCB18;
+
+`cm_803BCB18`, `cm_803BCB3C`, `cm_803BCB50` and `cm_803BCB64` are four
+separate statics that the console linker placed end to end -- `symbols.txt`
+gives their sizes as 0x24, 0x14, 0x14 and 0x38, exactly that struct -- so
+MWCC could reach the camera description through the first of them. GCC aligns
+each independently and `data->desc` reads whatever follows the callbacks.
+
+The failure that produces is worth understanding, because it is not the usual
+garbage-pointer crash. `viewport.xmax - viewport.xmin` came out **zero**, so
+both viewport scales were **infinite**, and with no camera-shake input the
+products are `0 * inf` -- NaN. It went into the translation, from there into
+the eye position and the interest, and finally into `lbVector_WorldToScreen`,
+which refused it. Every step in between propagated the NaN silently.
+
+Fixed the way the other five were: `#ifdef MUST_MATCH` keeps the console
+declaration and the port reads `cm_803BCB64` directly.
+
+**The stop's own history is the lesson.** It looked like a fighter bug for a
+long time -- it is reached from `ftDrawCommon_80080E18` while a fighter is
+drawn, and the first thing a probe found was a fighter standing at x = 1601.
+That led to a real bug (the joint-pair extent, below) which turned out to be
+a different one. What broke it open was asking which *component* was NaN:
+x and y wrong with z right cannot come from a fighter's position, because a
+fighter's position is not split that way. **Ask which part of a bad value is
+bad before asking who wrote it.**
+
+The original description of this stop follows.
+
 **`lbvector.c:383`**, `HSD_ASSERT(pos3d->x>-50000.0F&&pos3d->x<50000.0F)`, at
 2-3 match frames, reached from a fighter being drawn:
 
@@ -797,7 +844,7 @@ kind). **The other twenty are untouched** and will surface the same way.
 knockback constants, so a reversed copy never faults -- it just makes a match
 that behaves like nothing.
 
-## The adjacent-globals hazard: now five instances
+## The adjacent-globals hazard: now six instances
 
 The console linker packed separate globals contiguously and MWCC reached one
 through another. GCC aligns each independently, so that arithmetic lands on
@@ -818,9 +865,32 @@ and 0x210 bytes of whatever GCC placed there, on every boot, since long before
 this session. The objects are now named and the arithmetic kept under
 `MUST_MATCH`.
 
+The sixth is `Camera_ApplyQuake` in `cm/camera.c`, and it is the one that had
+been stopping every match:
+
+    struct CameraStaticData {
+        CameraModeCallbacks callbacks;   /* cm_803BCB18, 0x24 */
+        HSD_WObjDesc        interest;    /* cm_803BCB3C, 0x14 */
+        HSD_WObjDesc        eyepos;      /* cm_803BCB50, 0x14 */
+        HSD_CameraDescPerspective desc;  /* cm_803BCB64, 0x38 */
+    }* data = (struct CameraStaticData*) &cm_803BCB18;
+
+Four separate statics, laid end to end on console, reached through the first.
+The sizes in `symbols.txt` match the struct member for member, which is what
+makes the diagnosis certain rather than likely.
+
+**This one is also the clearest illustration of why the hazard is dangerous
+rather than merely wrong.** It did not crash and it did not produce an
+obviously silly number. `data->desc.viewport` read as a zero-width rectangle,
+a zero-width viewport made two scale factors infinite, and `0 * inf` made the
+camera pan NaN -- which then propagated through the eye position and the
+interest into an assert three frames into a match and two files away, in code
+that has nothing to do with cameras.
+
 **When a new stop makes no sense, check this first.** The tell is a decomp
-expression that indexes past the end of one global, or adds a magic byte
-offset to one. `config/GALE01/symbols.txt` settles it in one grep.
+expression that indexes past the end of one global, adds a magic byte offset
+to one, or -- as here -- casts the address of one global to a struct that
+describes several. `config/GALE01/symbols.txt` settles it in one grep.
 
 ## The third hazard: a call that only worked because of the register ABI
 
