@@ -29,11 +29,39 @@ void pc_hsd_forget_range(void* data, size_t size)
 void pc_hsd_archive_body(void* data, size_t size)
 {
     uintptr_t p = (uintptr_t)data;
+    size_t i, first, n, claimed = 0;
     if (!size) return;
     if (p < RAM_BASE || p >= RAM_BASE + RAM_BYTES || (p & 3) || size > RAM_BASE + RAM_BYTES - p) {
         pc_sys_log("pc_hsd_endian: archive body outside mapped RAM\n"); abort();
     }
-    memset(words + (p - RAM_BASE) / 4, 0x80, size / 4);
+    /* Marking a range fresh forgets that its objects were converted, which is
+       right when a read has just refilled it with big-endian bytes and wrong
+       when nothing has. In the second case every schema converts a second
+       time and swaps its own work back -- which is exactly the shape of the
+       two open stops: one word that reads as though it were never converted,
+       inside an archive whose other words are fine. Say when a range that
+       still holds claimed words is being marked fresh, so the two cases can
+       be told apart in a log. */
+    first = (p - RAM_BASE) / 4;
+    n = size / 4;
+    for (i = 0; i < n; i++) {
+        unsigned char w = words[first + i];
+        if (w != 0 && w != 0x80) {
+            claimed++;
+        }
+    }
+    if (claimed != 0) {
+        static int warned;
+        if (warned < 4) {
+            warned++;
+            pc_sys_log("pc_hsd_endian: archive body at ");
+            log_hex((unsigned) p);
+            pc_sys_log(" re-marked fresh over ");
+            log_hex((unsigned) claimed);
+            pc_sys_log(" already-claimed words\n");
+        }
+    }
+    memset(words + first, 0x80, n);
 }
 
 int pc_hsd_in_archive(const void* data, size_t size)

@@ -135,6 +135,16 @@ Each of these is a byte-order schema, and each was found at a real line:
    not record its size -- see "Character attribute blocks" below. Kirby is
    converted; Jigglypuff and everyone else are reported and left alone.
 9. **OPEN, and now the biggest single blocker: "not found stage param".**
+10. **OPEN, on a stage that loads.** With Onett the whole stage comes up and
+    the stop moves into Onett's own setup: `gronett.c:480` passes
+    `gp->u.onettcar.car_items[i]` to `grMaterial_801C8E08`, and it is NULL --
+    `it_802E6AEC` -> `Item_80268B18` -> `Item_8026862C` returned NULL for the
+    cars. Three ways that happens: `Item_8026784C(hold_kind, kind)` refused
+    the spawn, `GObj_Create` or `HSD_ObjAlloc` ran out, or `Item_802682F0`
+    failed its bone-table allocation. Worth a probe: they are easy to tell
+    apart and the answer is probably another count -- `it_804D6D38` and the
+    article data behind `xC4_article_data->x10_modelDesc->x4_bone_count` both
+    come out of ItCo.dat and neither has a schema yet.
 
 ### The stage-param stop, and what is known about it
 
@@ -161,26 +171,48 @@ archive memory, and `swap_stage_param` has no per-row claim -- so nothing in
 this port converts row 0 twice on purpose. Something else wrote that one word
 first.
 
-**Ruled out.** `pc_ground_param_to_native` now reports the schema mark on
-`&stage_params[0]` whenever it is not "unclaimed", and on a failing Venom run
-it said nothing -- so the word was archive memory that **no schema in this
-port had touched**, and it was already host order. That kills the leading
-hypothesis, which was that `pc_stage_head_to_native`'s
-`pc_hsd_mobj_flags_to_native(&e->unk4)` (the one converter that writes exactly
-one u32) had landed on it because some `unk28[i]` equalled
-`((u8*) stage_params) - 4`. It had not.
+**Three things ruled out, in this order.** Each was a real hypothesis with a
+test, and all three came back negative -- which is most of what is known:
 
-So the word arrived host order from the DVD path itself. That points at
-`pc_dvd.c`'s archive conversion -- the container header and the relocation
-table -- rather than at any schema above it: if a relocation entry names an
-offset that is not actually a pointer field, that word gets converted on the
-way in and nothing above ever knows. **That is where to look next**, and it is
-testable directly: dump the archive's relocation offsets for a failing stage
-and check whether one of them equals `stage_params - archive_base`.
+1. *Another schema converted that word first.* `pc_ground_param_to_native`
+   reports the schema mark on `&stage_params[0]` when it is anything but
+   "unclaimed". On a failing Venom run it said nothing. So no converter in
+   this port had touched it. That also kills the specific suspicion that
+   `pc_hsd_mobj_flags_to_native` -- the one converter that writes exactly one
+   u32 -- had landed there via a stray `unk28[i]`.
 
-Note also that the same shape explains stop 3 above (a particle command bank
-that this port marked converted and whose version word later read wrong), so
-one cause may account for both.
+2. *The file itself is odd.* It is not. The DATs were read straight off
+   `game.iso` and parsed offline (FST -> file -> archive header -> public
+   symbol table -> `grGroundParam` -> `+0xB0`/`+0xB4`). Every row is plain
+   big-endian and **no row is named by the relocation table**:
+
+       GrVe.dat  grGroundParam @0x110488  stage_params @0x110230  count 6
+                 rows 00000016 00000063 0000007a 000000c5 000000e4 0000010c
+                 relocated: false for every row; true for grGroundParam+0xB0
+       GrMc.dat  count 9,  rows 0a 4a 67 8d a0 ae ...
+       GrOt.dat  count 8,  rows 09 4b 69 91 a9 bb ...
+
+   Note Mute City's file says **count 9** where the running game reported
+   count 1, and Venom's row 0 is `0x16` = `St_Kind_Venom`, exactly what the
+   lookup wanted. So the data is right and the port is wrong.
+
+3. *The archive was converted twice because its provenance marks were reset.*
+   `pc_hsd_archive_body` now reports when it marks a range fresh that still
+   holds claimed words -- the one way a second conversion could happen. It
+   has not fired.
+
+Since the post-conversion word reads as the **original file bytes**, it has
+been swapped an even number of times: not zero (this port swaps it once), so
+twice. One of those swaps is `swap_stage_param`. The other is still unfound,
+and it is not any of the three above. `pc_hsd_archive_body` has exactly one
+caller and `pc_hsd_forget_range` one more (`pc_dvd.c`, per read) -- adding the
+same "over claimed words" report to `pc_hsd_forget_range` is the obvious next
+probe, since clearing a range to "not archive" would let a second conversion
+through just as re-marking would.
+
+Note the same shape explains stop 3 above (a particle command bank this port
+marked converted whose version word later read wrong), so one cause may
+account for both.
 
 ### Character attribute blocks (`ftData::ext_attr`)
 
