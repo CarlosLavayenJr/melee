@@ -23,7 +23,8 @@ getting real work done. A six-run tally at this checkpoint drew five different
 ones, where a few hours earlier every run stopped in the same place. Two are
 newly seen and undiagnosed:
 
-- **`synth.c:160` -- FIXED, and it was hiding as something else entirely.**
+- **`synth.c:160` -- STILL OPEN. A fix was tried, made it worse, and was
+  reverted; read the experiment below before trying the same thing.**
   `HSD_SynthSFXHeaderLoadCallback` asserts
 
       Can't load SFX file; bank(id=2) buffer overflow.
@@ -34,10 +35,26 @@ newly seen and undiagnosed:
   words are big-endian and every consumer treats them as sizes and counts.
   The assert compares a real byte count against a byte-reversed one.
 
-  Converted at the top of the header callback, which is the one correct
-  place: it is the read's completion callback, so it runs exactly once per
-  read and before anything has looked at the buffer -- including
-  `HSD_SynthSFXSampleLoadCallback`, which reads the same words later.
+  **The obvious fix is wrong, and the run says so unambiguously.** Swapping
+  all eight words at the top of the header callback -- which is the right
+  *place*, since it is the read's completion callback and runs once per read
+  before anything reads the buffer -- took the failure from bank 2 after
+  character select to **bank 0 at boot, six runs out of six**. Reverted.
+
+  Work through what that means, because it is the useful part. The assert is
+  `head - bank >= LoadBuf[1]`, so a **large** `LoadBuf[1]` is what fails it.
+  Before the swap, banks 0 and 1 passed and bank 2 failed; after, bank 0
+  failed. If the buffer held big-endian words, swapping would have made them
+  small and made the check *easier*. It did the opposite. **So the words are
+  already host order by the time the callback sees them** -- something on the
+  read path converts them -- and byte order is not what is wrong here.
+
+  That moves the suspicion to the other side of the comparison:
+  `hsd_SynthSFXBankHead[]` and `hsd_SynthSFXBank[]`, the port-side bank
+  bookkeeping, one of which is presumably too small or not filled in for
+  later banks. `HSD_DevComRequest(entrynum, 0, buf, 0x20, ...)` is a raw
+  32-byte read from the head of an .ssm file, so the next thing to establish
+  is what those two arrays hold and where they are set.
 
   **The reason this took so long to see is worth more than the fix.** In a
   gdb batch these runs looked like *silent* exits: the log ended

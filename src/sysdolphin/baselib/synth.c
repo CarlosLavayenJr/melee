@@ -154,38 +154,6 @@ static void HSD_SynthSFXHeaderLoadCallback(int result, int length, void* addr,
     s32 header_size;
     size_t alloc_size;
 
-#ifndef MUST_MATCH
-    /* The 32 bytes DevCom just read are eight big-endian words, and every
-       consumer of them treats them as sizes and counts. Unconverted, the
-       assert immediately below compares a real byte count against a
-       byte-reversed one and fails:
-     *
-         Can't load SFX file; bank(id=2) buffer overflow.
-     *
-       which OSPanic turns into a stack dump and PPCHalt, ending the process
-       with no other explanation. It accounted for five of six runs at one
-       point.
-     *
-       This is the one place to do it. HSD_SynthSFXLoadNewProc issues the read
-       straight into hsd_SynthSFXLoadBuf and names this function as its
-       completion callback, so this runs exactly once per read and before
-       anything has looked at the buffer -- including
-       HSD_SynthSFXSampleLoadCallback, which reads the same words later. */
-    {
-        int i;
-        for (i = 0; i < (int) (sizeof hsd_SynthSFXLoadBuf /
-                               sizeof hsd_SynthSFXLoadBuf[0]);
-             i++)
-        {
-            u32 v = hsd_SynthSFXLoadBuf[i];
-            hsd_SynthSFXLoadBuf[i] = ((v >> 24) & 0xFFu) |
-                                     ((v >> 8) & 0xFF00u) |
-                                     ((v << 8) & 0xFF0000u) |
-                                     ((v << 24) & 0xFF000000u);
-        }
-    }
-#endif
-
     if (HSD_Synth_804D7738 == 0) {
         int bankID = HSD_Synth_804C2A60[0].bankID;
 
