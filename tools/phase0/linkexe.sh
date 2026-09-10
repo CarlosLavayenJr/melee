@@ -206,6 +206,7 @@ LDFLAGS="$LDFLAGS -Wl,--wrap=HSD_ArchiveParse -Wl,--wrap=lbArchiveRelocate"
 LDFLAGS="$LDFLAGS -Wl,--wrap=psInitDataBankLocate"
 LDFLAGS="$LDFLAGS -Wl,--wrap=GXLoadTlut"
 LDFLAGS="$LDFLAGS -Wl,--wrap=GXSetChanCtrl -Wl,--wrap=GXSetChanMatColor -Wl,--wrap=GXSetChanAmbColor"
+LDFLAGS="$LDFLAGS -Wl,--wrap=GXLoadLightObjImm"
 LDFLAGS="$LDFLAGS -Wl,--wrap=HSD_ArchiveGetPublicAddress"
 
 WRAPPED="GXBegin GXCallDisplayList GXLoadTexObj GXSetTevOrder GXSetProjection GXLoadPosMtxImm GXCopyDisp"

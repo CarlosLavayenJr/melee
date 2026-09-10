@@ -5,6 +5,7 @@
 #include "pc_gx_material.h"
 #include "pc_sys.h"
 #include <dolphin/gx.h>
+#include "pc_gx_light.h"
 #include <string.h>
 static uint32_t bp[256], mask = 0xffffff;
 static uint32_t tev_registers[8];
@@ -129,6 +130,66 @@ void __wrap_GXSetChanAmbColor(GXChannelID chan, GXColor c)
 {
     store_chan_color(chan_amb_color, chan, c);
     __real_GXSetChanAmbColor(chan, c);
+}
+
+/* Light objects, as loaded. __GXLightObjInt (GXLight.c:9) is
+   reserved[3], Color, a[3], k[3], lpos[3], ldir[3] -- 64 bytes. Channel 1 is
+   lit by lights 2 and 3 (mask 12), so what those two actually contain decides
+   how much of the GX lighting equation has to exist. */
+typedef struct pc_gx_light {
+    unsigned char color[4];
+    float a[3], k[3], pos[3], dir[3];
+    int loaded;
+} pc_gx_light;
+static pc_gx_light lights[8];
+
+void __real_GXLoadLightObjImm(GXLightObj* obj, GXLightID id);
+void __wrap_GXLoadLightObjImm(GXLightObj* obj, GXLightID id)
+{
+    unsigned mask = (unsigned) id, index = 0;
+    __real_GXLoadLightObjImm(obj, id);
+    if (!obj || !mask) return;
+    while (!(mask & 1) && index < 7) { mask >>= 1; ++index; }
+    {
+        const unsigned char* raw = (const unsigned char*) obj;
+        pc_gx_light* l = &lights[index];
+        unsigned c;
+        /* GXInitLightColor packs (r<<24)|(g<<16)|(b<<8)|a into a host u32
+           (GXLight.c:291), so this is a word to unpack, not four bytes to
+           copy -- reading it as bytes reverses the channels. */
+        {
+            unsigned packed;
+            memcpy(&packed, raw + 12, 4);
+            l->color[0] = (unsigned char) (packed >> 24);
+            l->color[1] = (unsigned char) (packed >> 16);
+            l->color[2] = (unsigned char) (packed >> 8);
+            l->color[3] = (unsigned char) packed;
+        }
+        for (c = 0; c < 3; ++c) {
+            memcpy(&l->a[c], raw + 16 + c * 4, 4);
+            memcpy(&l->k[c], raw + 28 + c * 4, 4);
+            memcpy(&l->pos[c], raw + 40 + c * 4, 4);
+            memcpy(&l->dir[c], raw + 52 + c * 4, 4);
+        }
+        l->loaded = 1;
+    }
+}
+
+static void report_uint(unsigned v);
+
+static void report_float(float v)
+{
+    /* Two decimals, no libc: enough to read a light's shape from a log. */
+    int whole, frac;
+    if (v < 0) { pc_sys_log("-"); v = -v; }
+    if (v > 1.0e9f) { pc_sys_log("big"); return; }
+    whole = (int) v;
+    frac = (int) ((v - (float) whole) * 100.0f + 0.5f);
+    if (frac >= 100) { whole += 1; frac -= 100; }
+    report_uint((unsigned) whole);
+    pc_sys_log(".");
+    if (frac < 10) pc_sys_log("0");
+    report_uint((unsigned) frac);
 }
 
 /* Distinct texgen configurations the game actually asks for, with counts.
@@ -295,6 +356,22 @@ void pc_gx_material_report(void)
         report_uint(raster_ch1_no_clr1);
         pc_sys_log("\n");
     }
+    for (i = 0; i < 8; ++i) {
+        unsigned c;
+        if (!lights[i].loaded) continue;
+        pc_sys_log("  light ");  report_uint(i);
+        pc_sys_log(" rgba ");  /* r,g,b,a */
+        for (c = 0; c < 4; ++c) { report_uint(lights[i].color[c]); pc_sys_log(c < 3 ? "," : ""); }
+        pc_sys_log(" pos ");
+        for (c = 0; c < 3; ++c) { report_float(lights[i].pos[c]); pc_sys_log(c < 2 ? "," : ""); }
+        pc_sys_log(" dir ");
+        for (c = 0; c < 3; ++c) { report_float(lights[i].dir[c]); pc_sys_log(c < 2 ? "," : ""); }
+        pc_sys_log(" a ");
+        for (c = 0; c < 3; ++c) { report_float(lights[i].a[c]); pc_sys_log(c < 2 ? "," : ""); }
+        pc_sys_log(" k ");
+        for (c = 0; c < 3; ++c) { report_float(lights[i].k[c]); pc_sys_log(c < 2 ? "," : ""); }
+        pc_sys_log("\n");
+    }
     for (i = 0; i < chan1_draw_count; ++i) {
         struct draw_chan_tally* d = &chan1_draws[i];
         pc_sys_log("  ch1 draws ");   report_uint(d->draws);
@@ -414,7 +491,14 @@ int pc_gx_material_get(pc_gx_material* out)
         if ((tex && (ta & 12)) || (ras && (ta & 3))) return unsupported(4, "TEV swap table");
         if ((tex || ras) && ((bp[0xf6] & 15) != 4 || (bp[0xf7] & 15) != 14))
             return unsupported(4, "non-identity TEV swap table");
-        if (ras && raster != 0 && raster != 7) {
+        /* Channel 1 is produced by GX lighting, per vertex, and carried in a
+           second vertex colour -- see pc_gx_light.h. Accepted only when the
+           channel is in a configuration that can actually be reproduced;
+           otherwise it falls through to the diagnostic below rather than
+           being lit approximately. */
+        if (ras && raster == 1 && pc_gx_channel1_supported()) {
+            /* fall through to the stage record below */
+        } else if (ras && raster != 0 && raster != 7) {
             extern int pc_gx_fifo_vtx_has_clr1(void);
             if (raster == 1) {
                 extern int pc_gx_fifo_vtx_has_nrm(void);
@@ -473,3 +557,53 @@ int pc_gx_material_get(pc_gx_material* out)
     return 1;
 }
 #endif
+
+/* Bridge to pc_gx_fifo.c: channel 1's colour for one vertex, or 0 when the
+   channel is not in a configuration this can reproduce. Everything it needs --
+   the light objects, the channel control state and the two colour registers --
+   is already tracked above for diagnostics; this just assembles it.
+
+   Deliberately narrow: the menu was measured to use exactly one configuration
+   (lit, both sources from registers, GX_DF_CLAMP, GX_AF_SPEC), so anything
+   else returns 0 and the draw is rejected with the existing diagnostic rather
+   than lit approximately. */
+int pc_gx_channel1_color(const float mv_pos[3], const float mv_nrm[3],
+                         float out[4])
+{
+    const struct chan_config* cfg = &chan_state[1];
+    pc_gx_light_channel ch;
+    pc_gx_light_src src[8];
+    unsigned i, c;
+
+    if (!cfg->enable) return 0;
+    if (cfg->amb_src != 0 || cfg->mat_src != 0) return 0; /* GX_SRC_REG only */
+
+    for (c = 0; c < 4; ++c) {
+        ch.amb[c] = chan_amb_color[1][c] / 255.0f;
+        ch.mat[c] = chan_mat_color[1][c] / 255.0f;
+    }
+    ch.light_mask = cfg->light_mask;
+    ch.diff_fn = cfg->diff_fn;
+    ch.attn_fn = cfg->attn_fn;
+
+    for (i = 0; i < 8; ++i) {
+        for (c = 0; c < 4; ++c) src[i].color[c] = lights[i].color[c] / 255.0f;
+        for (c = 0; c < 3; ++c) {
+            src[i].pos[c] = lights[i].pos[c];
+            src[i].dir[c] = lights[i].dir[c];
+            src[i].cos_att[c] = lights[i].a[c];
+            src[i].dist_att[c] = lights[i].k[c];
+        }
+    }
+
+    pc_gx_light_vertex(&ch, src, 8, mv_pos, mv_nrm, out);
+    return 1;
+}
+
+/* Whether channel 1 can be produced at all, asked once per draw rather than
+   once per vertex. */
+int pc_gx_channel1_supported(void)
+{
+    const struct chan_config* cfg = &chan_state[1];
+    return cfg->enable && cfg->amb_src == 0 && cfg->mat_src == 0;
+}

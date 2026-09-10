@@ -69,6 +69,17 @@ static float pos_mtx[3][4] = {{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}};
 static float proj_mtx[4][4] = {
     {1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}, {0, 0, 0, 1}};
 
+/* GX derives lighting from a separate normal matrix, loaded alongside the
+   position matrix by pobj.c. */
+static float nrm_mtx[3][4] = {{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}};
+
+void __real_GXLoadNrmMtxImm(float mtx[3][4], unsigned id);
+void __wrap_GXLoadNrmMtxImm(float mtx[3][4], unsigned id)
+{
+    memcpy(nrm_mtx, mtx, sizeof nrm_mtx);
+    __real_GXLoadNrmMtxImm(mtx, id);
+}
+
 void pc_gx_fifo_set_pos_mtx(float m[3][4]) { memcpy(pos_mtx, m, sizeof pos_mtx); }
 void pc_gx_fifo_set_proj_mtx(float m[4][4]) { memcpy(proj_mtx, m, sizeof proj_mtx); }
 
@@ -264,6 +275,11 @@ typedef struct {
     float pos[3];
     float color[4];
     float uv[2];
+    /* Raster channel 1. The menu produces it through GX lighting rather than
+       a vertex colour (measured: not one of those draws supplies GX_VA_CLR1),
+       and GX lights per vertex, so it is computed here and carried like any
+       other attribute. */
+    float color1[4];
 } pc_vertex_t;
 
 #define PC_MAX_VERTS 65536
@@ -420,7 +436,7 @@ static unsigned int find_memory_type(VkPhysicalDevice phys, unsigned int type_bi
 static VkShaderModule vert_mod, frag_mod;
 static VkPipelineShaderStageCreateInfo stages[2];
 static VkVertexInputBindingDescription binding;
-static VkVertexInputAttributeDescription attrs[3];
+static VkVertexInputAttributeDescription attrs[4];
 static VkPipelineVertexInputStateCreateInfo vin;
 static VkPipelineInputAssemblyStateCreateInfo ia;
 static VkPipelineViewportStateCreateInfo vp;
@@ -489,11 +505,14 @@ static int ensure_pipeline(void)
     attrs[2].location = 2; attrs[2].binding = 0;
     attrs[2].format = VK_FORMAT_R32G32_SFLOAT;
     attrs[2].offset = offsetof(pc_vertex_t, uv);
+    attrs[3].location = 3; attrs[3].binding = 0;
+    attrs[3].format = VK_FORMAT_R32G32B32A32_SFLOAT;
+    attrs[3].offset = offsetof(pc_vertex_t, color1);
     memset(&vin, 0, sizeof vin);
     vin.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
     vin.vertexBindingDescriptionCount = 1;
     vin.pVertexBindingDescriptions = &binding;
-    vin.vertexAttributeDescriptionCount = 3;
+    vin.vertexAttributeDescriptionCount = 4;
     vin.pVertexAttributeDescriptions = attrs;
 
     memset(&ia, 0, sizeof ia);
@@ -846,10 +865,13 @@ static void flush_draw(VkCommandBuffer cmd, unsigned int count)
  * missing line is a much smaller visible gap than the effort to add a
  * second pipeline topology for it right now. */
 static void emit_vertex(unsigned int* count, const float world_pos[3],
-                        const float color[4], const float uv[2])
+                        const float color[4], const float uv[2],
+                        const float normal[3])
 {
     float clip_pos[3];
     float tex[2];
+    float mv_nrm[3], len;
+    unsigned k;
     if (*count >= PC_MAX_VERTS) {
         return;
     }
@@ -860,6 +882,26 @@ static void emit_vertex(unsigned int* count, const float world_pos[3],
        vertex's own TEX0 is exact rather than an approximation. */
     tex[0] = uv[0]; tex[1] = uv[1];
     pc_gx_texcoord_transform(tex);
+
+    /* Raster channel 1, lit per vertex. mtx_transform applies the position
+       matrix, so clip_pos is model-view space here -- the space GX lights in,
+       and the space the light objects are already expressed in. The normal
+       takes the rotation part of the normal matrix only. */
+    for (k = 0; k < 3; ++k) {
+        mv_nrm[k] = nrm_mtx[k][0] * normal[0] + nrm_mtx[k][1] * normal[1] +
+                    nrm_mtx[k][2] * normal[2];
+    }
+    len = mv_nrm[0]*mv_nrm[0] + mv_nrm[1]*mv_nrm[1] + mv_nrm[2]*mv_nrm[2];
+    if (len > 0.0f) {
+        len = 1.0f / (float) __builtin_sqrtf(len);
+        mv_nrm[0] *= len; mv_nrm[1] *= len; mv_nrm[2] *= len;
+    } else {
+        mv_nrm[0] = mv_nrm[1] = 0.0f; mv_nrm[2] = 1.0f;
+    }
+    if (!pc_gx_channel1_color(clip_pos, mv_nrm, vertex_buf[*count].color1)) {
+        vertex_buf[*count].color1[0] = vertex_buf[*count].color1[1] =
+        vertex_buf[*count].color1[2] = vertex_buf[*count].color1[3] = 0.0f;
+    }
     vertex_buf[*count].pos[0] = clip_pos[0];
     vertex_buf[*count].pos[1] = clip_pos[1];
     vertex_buf[*count].pos[2] = clip_pos[2];
@@ -880,6 +922,7 @@ static void handle_draw(VkCommandBuffer cmd, reader_t* r, unsigned char cmd_byte
     static float raw_pos[PC_MAX_VERTS][3];
     static float raw_col[PC_MAX_VERTS][4];
     static float raw_uv[PC_MAX_VERTS][2];
+    static float raw_nrm[PC_MAX_VERTS][3];
     unsigned int i;
     unsigned int out_count = 0;
     GXAttr attr;
@@ -888,7 +931,8 @@ static void handle_draw(VkCommandBuffer cmd, reader_t* r, unsigned char cmd_byte
         float p[3] = {0, 0, 0};
         float c[4] = {1, 1, 1, 1};
         float uv[2] = {0, 0};
-        int have_pos = 0;
+        float nrm[3] = {0, 0, 1};
+        int have_pos = 0, have_nrm = 0;
 
         for (attr = 0; attr <= GX_VA_TEX7; attr++) {
             unsigned char desc = vtx_desc[attr];
@@ -924,6 +968,15 @@ static void handle_draw(VkCommandBuffer cmd, reader_t* r, unsigned char cmd_byte
                     ar.end = ar.p + comp_type_size(attr, vf->attrs[attr].type);
                     ar.overrun = 0;
                     read_color(&ar, vf->attrs[attr].type, c);
+                } else if (attr == GX_VA_NRM) {
+                    reader_t ar;
+                    ar.p = arr->base + (unsigned long) idx * arr->stride;
+                    ar.end = ar.p + attr_direct_size(attr, vf);
+                    ar.overrun = 0;
+                    nrm[0] = read_direct_component(&ar, vf->attrs[attr].type, vf->attrs[attr].frac);
+                    nrm[1] = read_direct_component(&ar, vf->attrs[attr].type, vf->attrs[attr].frac);
+                    nrm[2] = read_direct_component(&ar, vf->attrs[attr].type, vf->attrs[attr].frac);
+                    have_nrm = 1;
                 }
                 continue;
             }
@@ -941,6 +994,11 @@ static void handle_draw(VkCommandBuffer cmd, reader_t* r, unsigned char cmd_byte
                     uv[1] = read_direct_component(r, vf->attrs[attr].type, vf->attrs[attr].frac);
             } else if (attr == GX_VA_CLR0) {
                 read_color(r, vf->attrs[attr].type, c);
+            } else if (attr == GX_VA_NRM) {
+                nrm[0] = read_direct_component(r, vf->attrs[attr].type, vf->attrs[attr].frac);
+                nrm[1] = read_direct_component(r, vf->attrs[attr].type, vf->attrs[attr].frac);
+                nrm[2] = read_direct_component(r, vf->attrs[attr].type, vf->attrs[attr].frac);
+                have_nrm = 1;
             } else {
                 skip_direct(r, attr, vf);
             }
@@ -950,6 +1008,8 @@ static void handle_draw(VkCommandBuffer cmd, reader_t* r, unsigned char cmd_byte
             memcpy(raw_pos[out_count], p, sizeof p);
             memcpy(raw_col[out_count], c, sizeof c);
             memcpy(raw_uv[out_count], uv, sizeof uv);
+            if (!have_nrm) { nrm[0] = nrm[1] = 0.0f; nrm[2] = 1.0f; }
+            memcpy(raw_nrm[out_count], nrm, sizeof nrm);
             out_count++;
         }
     }
@@ -964,35 +1024,52 @@ static void handle_draw(VkCommandBuffer cmd, reader_t* r, unsigned char cmd_byte
         unsigned int emitted = 0;
         if (prim == GX_TRIANGLES) {
             for (i = 0; i + 2 < out_count; i += 3) {
-                emit_vertex(&emitted, raw_pos[i], raw_col[i], raw_uv[i]);
-                emit_vertex(&emitted, raw_pos[i + 1], raw_col[i + 1], raw_uv[i + 1]);
-                emit_vertex(&emitted, raw_pos[i + 2], raw_col[i + 2], raw_uv[i + 2]);
+                emit_vertex(&emitted, raw_pos[i], raw_col[i], raw_uv[i],
+                            raw_nrm[i]);
+                emit_vertex(&emitted, raw_pos[i + 1], raw_col[i + 1], raw_uv[i + 1],
+                            raw_nrm[i + 1]);
+                emit_vertex(&emitted, raw_pos[i + 2], raw_col[i + 2], raw_uv[i + 2],
+                            raw_nrm[i + 2]);
             }
         } else if (prim == GX_TRIANGLESTRIP) {
             for (i = 2; i < out_count; i++) {
                 if (i & 1) {
-                    emit_vertex(&emitted, raw_pos[i - 1], raw_col[i - 1], raw_uv[i - 1]);
-                    emit_vertex(&emitted, raw_pos[i - 2], raw_col[i - 2], raw_uv[i - 2]);
+                    emit_vertex(&emitted, raw_pos[i - 1], raw_col[i - 1], raw_uv[i - 1],
+                            raw_nrm[i - 1]);
+                    emit_vertex(&emitted, raw_pos[i - 2], raw_col[i - 2], raw_uv[i - 2],
+                            raw_nrm[i - 2]);
                 } else {
-                    emit_vertex(&emitted, raw_pos[i - 2], raw_col[i - 2], raw_uv[i - 2]);
-                    emit_vertex(&emitted, raw_pos[i - 1], raw_col[i - 1], raw_uv[i - 1]);
+                    emit_vertex(&emitted, raw_pos[i - 2], raw_col[i - 2], raw_uv[i - 2],
+                            raw_nrm[i - 2]);
+                    emit_vertex(&emitted, raw_pos[i - 1], raw_col[i - 1], raw_uv[i - 1],
+                            raw_nrm[i - 1]);
                 }
-                emit_vertex(&emitted, raw_pos[i], raw_col[i], raw_uv[i]);
+                emit_vertex(&emitted, raw_pos[i], raw_col[i], raw_uv[i],
+                            raw_nrm[i]);
             }
         } else if (prim == GX_TRIANGLEFAN) {
             for (i = 2; i < out_count; i++) {
-                emit_vertex(&emitted, raw_pos[0], raw_col[0], raw_uv[0]);
-                emit_vertex(&emitted, raw_pos[i - 1], raw_col[i - 1], raw_uv[i - 1]);
-                emit_vertex(&emitted, raw_pos[i], raw_col[i], raw_uv[i]);
+                emit_vertex(&emitted, raw_pos[0], raw_col[0], raw_uv[0],
+                            raw_nrm[0]);
+                emit_vertex(&emitted, raw_pos[i - 1], raw_col[i - 1], raw_uv[i - 1],
+                            raw_nrm[i - 1]);
+                emit_vertex(&emitted, raw_pos[i], raw_col[i], raw_uv[i],
+                            raw_nrm[i]);
             }
         } else if (prim == GX_QUADS) {
             for (i = 0; i + 3 < out_count; i += 4) {
-                emit_vertex(&emitted, raw_pos[i], raw_col[i], raw_uv[i]);
-                emit_vertex(&emitted, raw_pos[i + 1], raw_col[i + 1], raw_uv[i + 1]);
-                emit_vertex(&emitted, raw_pos[i + 2], raw_col[i + 2], raw_uv[i + 2]);
-                emit_vertex(&emitted, raw_pos[i + 2], raw_col[i + 2], raw_uv[i + 2]);
-                emit_vertex(&emitted, raw_pos[i + 3], raw_col[i + 3], raw_uv[i + 3]);
-                emit_vertex(&emitted, raw_pos[i], raw_col[i], raw_uv[i]);
+                emit_vertex(&emitted, raw_pos[i], raw_col[i], raw_uv[i],
+                            raw_nrm[i]);
+                emit_vertex(&emitted, raw_pos[i + 1], raw_col[i + 1], raw_uv[i + 1],
+                            raw_nrm[i + 1]);
+                emit_vertex(&emitted, raw_pos[i + 2], raw_col[i + 2], raw_uv[i + 2],
+                            raw_nrm[i + 2]);
+                emit_vertex(&emitted, raw_pos[i + 2], raw_col[i + 2], raw_uv[i + 2],
+                            raw_nrm[i + 2]);
+                emit_vertex(&emitted, raw_pos[i + 3], raw_col[i + 3], raw_uv[i + 3],
+                            raw_nrm[i + 3]);
+                emit_vertex(&emitted, raw_pos[i], raw_col[i], raw_uv[i],
+                            raw_nrm[i]);
             }
         } else {
             static int warned;

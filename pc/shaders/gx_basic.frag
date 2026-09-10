@@ -1,6 +1,7 @@
 #version 450
 
 layout(location = 0) in vec4 vColor;
+layout(location = 2) in vec4 vColor1;
 layout(location = 1) in vec2 vUV;
 layout(location = 0) out vec4 outColor;
 layout(set=0, binding=0) uniform sampler2D gxTextures[8];
@@ -77,7 +78,11 @@ void main() {
         uvec4 stage = pc.stages[i];
         uint c = stage.x, a = stage.y;
         vec4 t = sampleTexture(stage.z), k = pc.konst[i];
-        vec4 raster = stage.w == 0 ? vColor : vec4(0);
+        /* The BP raster field, as GXTev.c's c2r[] encodes it: 0 selects
+           colour channel 0, 1 selects channel 1 -- which the vertex stage
+           supplies already lit, because GX lights per vertex -- and 7 is the
+           zero channel. */
+        vec4 raster = stage.w == 0 ? vColor : (stage.w == 1 ? vColor1 : vec4(0));
         vec3 rgb = operation(colorInput((c>>12)&15,t,k,raster), colorInput((c>>8)&15,t,k,raster),
                              colorInput((c>>4)&15,t,k,raster), colorInput(c&15,t,k,raster), c);
         float alpha = operation(vec3(alphaInput((a>>13)&7,t,k,raster)), vec3(alphaInput((a>>10)&7,t,k,raster)),

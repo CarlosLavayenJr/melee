@@ -19,4 +19,9 @@ void pc_gx_material_report(void);
    place. Returns 1 when a matrix was applied. sysdolphin puts every ordinary
    texture's scale/rotate/translate here, so this is not optional. */
 int pc_gx_texcoord_transform(float uv[2]);
+/* Raster channel 1, which the menu produces through GX lighting rather than a
+   vertex colour. Per vertex, because GX lights per vertex. */
+int pc_gx_channel1_color(const float mv_pos[3], const float mv_nrm[3],
+                         float out[4]);
+int pc_gx_channel1_supported(void);
 #endif

@@ -1,104 +1,95 @@
 # Handoff — September 10, 2026 checkpoint
 
-## The main menu renders; the remaining gap needs GX lighting
+## The main menu renders, background included
 
-`build/menu-smoke.bmp` at menu frame 120 shows the real main menu -- the five
-items, the selected-item highlight, the SmashBrothers logo and the background
-panel. Accepted draws went 7876 -> 19480 over 240 frames and skips 21179 ->
-about 10000. This is the menu DRAWING, not a complete or navigable one:
-submenu transitions and keyboard navigation are untested.
+`build/menu-smoke.bmp` at menu frame 120 shows the menu with its animated
+background: the five items and the selected-item highlight, the streaks, the
+rotating text ring, the SmashBrothers wordmarks and the panel. Over 240 frames
+draws accepted went 7876 -> 26482 and skips 21179 -> 2333.
 
-### Method: rank the rejections, then fix in that order
+Still NOT established: submenu transitions, keyboard navigation, or that any
+colour is bit-exact against console. 2333 draws are still discarded.
+
+### Method: rank the rejections, fix in that order, re-measure
 
 Rejection reasons were logged once each, which notices a gap but cannot rank
-one -- a check discarding every draw on screen looked identical to one
-discarding a single stray draw. `pc_gx_material_report()` and
-`pc_gx_texture_report()` now tally accepted draws and each skip by reason, and
-`pc/tests/menu_smoke.gdb` prints both at the end. Everything below was picked
-off that ranking and verified against it. Keep doing this rather than guessing.
+one. `pc_gx_material_report()` and `pc_gx_texture_report()` now tally accepted
+draws and each skip by reason; `pc/tests/menu_smoke.gdb` prints both. Every fix
+below was chosen off that ranking and verified against it. One was also
+*prevented* by it -- see channel 1.
 
-### What was fixed
+### What was fixed, in the order the tally chose
 
-1. **Post-transform texture matrices** (20743 skips -> 671). sysdolphin sets an
-   identity 2x4 texgen (`setupTextureCoordGen`, tobj.c:492) and loads the
-   texture's whole scale/rotate/translate as the POST-transform matrix
-   (tobj.c:488). Ignoring it discarded the UV transform of every ordinary
-   textured draw. Tracked via a `GXLoadTexMtxImm` wrapper, applied to the
-   vertex TEX0 in `emit_vertex` -- exact, because the generator feeding it is
-   identity. **On its own this changed nothing visible**; those draws then
-   failed the checks behind it.
-2. **Depth attachment** (7033 skips -> 0). The framebuffer had none at all.
-   `pc_vulkan.c` creates a D32_SFLOAT image with the swapchain, adds it to the
-   render pass and framebuffers, clears it to the far plane.
-3. **General blend factors** (4280 -> 0). Only source-alpha/inverse-source-alpha
-   were mapped.
-4. **Palettized textures** (92 CI4 + 92 CI8 loads -> 0). Decoded through the
-   TLUT a `GXLoadTlut` wrapper records; an index past the palette fails the
-   decode rather than inventing a colour.
+1. **Post-transform texture matrices** (20743 -> 671). sysdolphin sets an
+   identity 2x4 texgen (tobj.c:492) and loads the texture's whole
+   scale/rotate/translate as the POST-transform matrix (tobj.c:488). On its own
+   this changed nothing visible; nothing textured could be right without it.
+2. **Depth attachment** (7033 -> 0). The framebuffer had none at all.
+3. **General blend factors** (4280 -> 0). Only src-alpha/inv-src-alpha existed.
+4. **Palettized textures** (92 CI4 + 92 CI8 -> 0), through the TLUT a
+   `GXLoadTlut` wrapper records.
+5. **Raster channel 1 via GX lighting** (7600 -> 0). The big one; see below.
 
-2 and 3 are pipeline and render-pass state, NOT shader code. That is worth
-stating because it was assumed they needed the shader regenerated and they did
-not -- the assumption would have blocked both behind a toolchain they never
-required. They did need the fixed 32-pipeline enumeration replaced with a
-64-entry cache keyed by GX state, built on demand; a full cache reports and
-skips rather than silently drawing through the wrong pipeline.
+2 and 3 are pipeline/render-pass state, not shader code -- worth stating
+because it was assumed otherwise, and that assumption would have blocked both
+behind a toolchain they never needed. They did need the fixed 32-pipeline
+enumeration replaced by a 64-entry cache keyed on GX state, built on demand.
 
-### Current tally, and exactly what channel 1 is
+### Channel 1: the wrong turn the measurements prevented
 
-    5920  raster channel other than COLOR0 or ZERO
-     844  texcoord index beyond enabled texgen count
-     648  non-identity texgen
-     464  more than four TEV stages
-      99  logic/subtract blending
+The obvious fix was "channel 1 is a second vertex colour, decode GX_VA_CLR1".
+Instrumenting the vertex descriptor at each rejection gave `with a vertex
+CLR1: 0, without: 5920` -- not one such draw supplies one. Channel 1 comes
+from the lighting path.
 
-Raster channel 1 is the whole remaining story. The obvious reading -- "channel
-1 is a second vertex colour, decode `GX_VA_CLR1`" -- was measured and is
-WRONG. Instrumenting the vertex descriptor at every rejection gave:
+Tallying rejected draws by the channel state actually in force (not by
+GXSetChanCtrl call counts, which say only which configurations exist) gave a
+single configuration for all of them:
 
-    of those, channel 1 with a vertex CLR1: 0, without: 5920
+    lit=1 amb=GX_SRC_REG mat=GX_SRC_REG lights=12
+    diff=GX_DF_CLAMP attn=GX_AF_SPEC,  normals on 5846 of 5920
 
-Not one supplies a second vertex colour, so channel 1 comes from the
-channel-control path. Tallying rejected draws by the control state actually in
-force (not by call counts) gives a single configuration for all of them:
+Two instrumentation bugs were caught and fixed on the way, each of which had
+already produced a wrong statement in this file:
+  - the colour setters recorded only channel ids below 4, missing
+    `GX_COLOR0A0`/`GX_COLOR1A1`, and so reported channel 1's material colour
+    as black. It is white.
+  - a light's `Color` field is a packed u32 `(r<<24)|(g<<16)|(b<<8)|a`
+    (GXLight.c:291), not four bytes; reading it as bytes reversed every
+    channel and made a blue light look yellow.
+That is why these numbers are worth more than the first version of them.
 
-    ch1 draws 5920 (with normals 5846)
-        lit=1 amb=GX_SRC_REG mat=GX_SRC_REG lights=12
-        diff=GX_DF_CLAMP attn=GX_AF_SPEC
-    chan 1 mat rgba 255,255,255,255   amb rgba 0,0,0,0
+### How lighting is implemented
 
-So: lighting enabled, white material register, black ambient, lights 2 and 3
-(mask 12), clamped diffuse, specular attenuation, and normals present on
-5846 of 5920 draws.
+GX lights PER VERTEX, so the equation lives in C in `pc/src/pc_gx_light.h`,
+next to the vertex expansion, where `pc/tests/gx_light_test.c` checks it
+against answers worked out by hand -- rather than in SPIR-V, where nothing
+could test it without a GPU. The shader gained one input and a selector on the
+raster field it already read.
 
-CORRECTION to an earlier note here: it previously said channel 1's material and
-ambient registers were black. That was an artefact of the instrumentation,
-which only recorded channel ids below 4 and so missed `GX_COLOR0A0` and
-`GX_COLOR1A1` -- the ids sysdolphin actually uses. The material colour is
-white. `split_channels` in pc_gx_material.c now normalises the combined ids.
+The equation is a port of encounter/aurora's `lighting_func`
+(lib/gx/shader.cpp, MIT), credited in the header, as this project already
+credits Aurora elsewhere. Only the measured configuration is accepted;
+`pc_gx_channel1_supported()` returns 0 for anything else and the draw is
+rejected with the existing diagnostic rather than lit approximately.
 
-### The shape of the fix
+`GXLoadNrmMtxImm` is wrapped for the normal matrix, and `GX_VA_NRM` is now
+decoded (direct and indexed) instead of skipped.
 
-GX lighting is computed PER VERTEX, not per fragment. That matters: the
-lighting equation can live on the CPU in `emit_vertex`, next to the
-post-transform texgen work, where it is ordinary C that a standalone test can
-check -- rather than in SPIR-V. The shader then only needs one more input and
-a selector on the existing `stage.w`.
+### What still gets discarded
 
-Needed, in order:
-1. Light objects: wrap `GXLoadLightObj` (and the `GXInitLight*` setters, or
-   read the loaded object) for lights 2 and 3.
-2. Normals: `GX_VA_NRM` is read and discarded by `pc_gx_fifo.c` today; it has
-   to be decoded and transformed by the normal matrix.
-3. The GX_DF_CLAMP / GX_AF_SPEC equation, as a tested C function.
-4. A second vertex colour attribute carrying the result, and the shader
-   selecting it when the raster field is 1.
+     871  texcoord index beyond enabled texgen count
+     741  non-identity texgen
+     594  more than four TEV stages
+     127  logic/subtract blending
 
-Measure the loaded light objects before writing step 3 -- the same
-measure-then-implement order that has been right every time so far, including
-where it prevented decoding `GX_VA_CLR1` for nothing.
+No single dominant cause remains. `non-identity texgen` is the residue the
+post-transform work did not cover -- worth recording which configurations
+those are, the same way the first 20743 were narrowed.
 
-`pc/tests/bmp_to_png.py` converts a capture for viewing. Captures stay under
-gitignored `build/` and are never committed.
+Tests: gx_light_test, texture_decode_test, thp_kernel_test, stage_data_test,
+hsd_archive_test all pass. `pc/tests/bmp_to_png.py` converts a capture for
+viewing; captures stay under gitignored `build/`.
 
 ## Latest checkpoint: main menu runs for 240 frames; rendering incomplete
 
