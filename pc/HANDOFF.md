@@ -109,13 +109,30 @@ Each of these is a byte-order schema, and each was found at a real line:
    archive body, so the claim still says "converted" while the contents say
    otherwise. `swap_cmd_bank` now says exactly that when it happens.
 
-   **This is very likely the same bug as the stage-param stop below**: both
-   are a word in an archive that was correct and then was not, with the claim
-   bookkeeping out of step with the memory. Fixing the provenance tracking may
-   fix both at once. The place to look is every path that fills or moves an
-   archive body without going through the DVD read that calls
-   `pc_hsd_archive_body` -- the preload cache in `lbdvd.c` is the obvious
-   suspect.
+   **That paragraph was written about the wrong bank, and the conclusion it
+   drew does not follow.** The "marked converted but its version now reads N"
+   line fires once, globally, for whichever bank trips it first. Comparing it
+   against the panic in the same run shows they are never the same object:
+
+       diagnostic 0x812A8600   panic cmdBank 0x812A9380   (0xD80 apart)
+       diagnostic 0x81385FE0   panic cmdBank 0x813860A0   (0xC0 apart)
+
+   So nothing has yet established what is wrong with the bank that actually
+   panics, and the ARAM story below was reached by connecting two facts about
+   two different objects. It may still be right; it is not evidence.
+
+   `__wrap_psInitDataBankLoad` in `pc/src/pc_hsd_particle.c` now asks at the
+   panic's own door, printing the version it is about to read, this port's
+   mark on that exact address, and what byte-reversing the version would give.
+   The three marks need completely different fixes and one run separates them:
+   `0` is untracked memory, `0x80` is a fresh archive body conversion never
+   reached, anything else names the schema that claimed it.
+
+   One gap worth knowing about: `psInitDataBank` calls `psInitDataBankLocate`
+   from inside particle.c, so `--wrap` does not redirect that one, and the
+   same is true of the `psInitDataBankLoad` call on particle.c:332. The
+   grdatfiles.c and ground.c call sites do cross a translation unit and are
+   wrapped.
 4. **FIXED** `ftparts.c:681` segfault, `fp->parts[i].flags8 = 0` past the end
    of a `MAX_FT_PARTS` allocation, because `ftPartsTable[kind]->parts_num`
    came out of PlCo.dat byte-reversed.
@@ -178,7 +195,94 @@ Each of these is a byte-order schema, and each was found at a real line:
     other schema got there first) and the fix differs completely between
     them, so the log now names which by printing `pc_hsd_kind_at`.
 
-### STILL OPEN: the stage-param stop, and a correction
+12. **FIXED** `lb_00F9.c:171` segfault, `prev->desc.lb_unk0.rotate =
+    jobj->rotate` with `jobj` NULL, reached from Hyrule Castle's setup:
+
+        lb_8000FD48 (jobj=0x0, desc=0x80841920, max_count=100663296)
+
+    100663296 is 0x06000000 -- 6 with its bytes the other way round.
+    `lb_8000FD48` walks `max_count` bones down a jobj chain and checks for
+    NULL only once, on entry, so a count of six became a hundred million and
+    the walk ran off the end of the chain on the seventh step. The count comes
+    from a `DynamicsDesc` handed out as a `dynamicsdata_*` public symbol.
+
+    `count` is not the only field: `lb_80011710` copies `pos` out of the same
+    descriptor and reads `count` rows behind `data`, each 0x3C bytes of float.
+    The row array is declared `array[2]` inside a 0x90-byte union but is
+    really variable-length in the file, which is why the bound comes from
+    `count` and is checked against the archive first. Four symbols across two
+    stages use this (`dynamicsdata_flag3/4/6` on Hyrule Castle,
+    `dynamicsdata_shipflag` on Rainbow Cruise), so the dispatch matches the
+    prefix. See `pc_dynamics_desc_to_native` in `pc/src/pc_stage_data.c`.
+13. **OPEN, and a fourth hazard class: bitfield allocation order.**
+    `itanimlist.c:385` jumped to 0x000003e8 -- `it_803F22A8[opcode]` with a
+    garbage opcode, reached from Corneria's setup through an item animation
+    script. The opcode is a bitfield:
+
+        typedef struct itAnimlistCmdUnk {
+            u16 x0_b0 : 6;
+            u16 opcode : 8;
+            u16 x0_b14 : 2;
+            u16 x2;
+        } itAnimlistCmdUnk;
+
+    MWCC on PowerPC allocates bitfields from the most significant bit of the
+    storage unit, GCC on x86 from the least. So on console `opcode` is bits
+    9..2 of that u16 and in this build it is bits 13..6 -- **a different bug
+    from byte order, and one no amount of swapping fixes.** The port has met
+    this once before (the `StageCallbacks` flags aliases) and the established
+    treatment is to reverse the declaration order under the port build while
+    leaving the console declaration untouched.
+
+    Not fixed yet, because the fix has a prerequisite: reversing the order is
+    only correct once the u16 itself is host order, and nothing converts the
+    item animation script. The script is a variable-length command stream and
+    its extent is not recorded in the file, so that needs establishing first.
+    `it_80278F2C` reads the stream as `((u16*) cmd->u)[0]` and `((s16*)
+    cmd->u)[0]` throughout, which suggests a pure u16 stream, but that is an
+    inference from one command handler and not a survey.
+
+### The stage-param stop: caught, after five runs of ruling suspects out
+
+**The word is written by this port's own `coll_data` schema.** The tripwire
+described below caught it in the act:
+
+    pc_stage_data: stage param row 0 at 2168523248 changed from 369098752
+                   to 22 during the coll_data schema
+
+369098752 is 0x16000000, which is `St_Kind_Venom` (22) big-endian, and 22 is
+the same value host order. So this is a deliberate byte swap of that exact
+word by `pc_map_coll_to_native`, not a stray write through a bad pointer --
+which also retires the reading of the old hardware-watchpoint evidence (a
+pointer and a code address landing in that word) as belonging to something
+else, probably an earlier use of that memory.
+
+That it happened at all while `head_check` kept answering "in none of the
+ranges" is the useful part: `head_wrote` records the three array walks
+`pc_map_coll_to_native` makes but not the fourteen struct-field swaps it does
+first, so a write from those was invisible to the very diagnostic built to
+catch it. **A range list only exonerates what it records.**
+
+`watch_report_base` now says which block the watched word falls inside -- the
+`MapCollData` struct itself, or the vertex, line or joint array -- and
+`watch_check` is called between each phase, so the next hit names the write
+rather than the function. The offset it prints says whether a base or a count
+is wrong.
+
+### The tripwire, and why it beat five runs of range attribution
+
+`watch_arm` runs when `map_head` is fetched, which is the earliest point the
+address is knowable: `grGroundParam` can be looked up through
+`__real_HSD_ArchiveGetPublicAddress`, which only reads the archive's symbol
+table and converts nothing. It records the word's value; `watch_check` at
+each later step reports the first step that changed it.
+
+This is worth keeping as a technique. Attribution after the fact could only
+ever say "not this one" about things it had thought to record, and five runs
+of that produced five true negatives and no progress. Watching the object
+itself answered it on the first run that hit the stop.
+
+### Superseded: the stage-param stop as an open question, and a correction
 
 `grGroundParam` claimed the `GroundParam` but not the `stage_params` array
 behind it, so two GroundParams resolving to the same array would each convert

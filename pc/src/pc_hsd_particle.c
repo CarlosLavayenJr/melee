@@ -353,6 +353,52 @@ void pc_hsd_particle_banks_to_native(void* cmd, void* tex, void* form)
     }
 }
 
+/* psInitDataBankLoad is the other door into the same banks, and the one the
+ * open "psInitDataBanks: unknown version" stop comes through. It is reached
+ * from grdatfiles.c's preloaded-archive branch, which calls Load WITHOUT
+ * Locate, so the wrapper above never runs for it.
+ *
+ * The port already converts these banks where the public symbol is handed out
+ * (pc_stage_data.c's dispatch on "map_ptcl" and "map_texg"), which should
+ * cover this branch. Two runs in three still panic here, and the diagnostic
+ * that was supposed to explain it turned out to be about a different bank
+ * entirely -- it fires once, globally, and the address it named was hundreds
+ * of bytes away from the one that panicked. So ask at the panic's own door
+ * instead: what does this port know about the exact bank about to be read?
+ *
+ * The mark distinguishes the three possibilities that need completely
+ * different fixes, and nothing so far has established which is happening:
+ *
+ *   0     -- not tracked memory at all, so no schema could have run
+ *   0x80  -- a fresh archive body nothing claimed, so conversion never
+ *            reached it and the version is simply still big-endian
+ *   other -- claimed, and by which schema
+ */
+void __real_psInitDataBankLoad(int bank, const int* cmdBank,
+                               const int* texBank, const u32* ref,
+                               const int* formBank);
+void __wrap_psInitDataBankLoad(int bank, const int* cmdBank,
+                               const int* texBank, const u32* ref,
+                               const int* formBank)
+{
+    if (cmdBank != NULL) {
+        u16 v = *(const u16*) cmdBank;
+        if (v != 0 && (v < 0x40 || v > 0x43)) {
+            pc_sys_log("pc_hsd_particle: psInitDataBankLoad was handed a "
+                       "command bank at ");
+            log_uint((u32) (uintptr_t) cmdBank);
+            pc_sys_log(" whose version reads ");
+            log_uint(v);
+            pc_sys_log("; this port's mark on it is ");
+            log_uint(pc_hsd_kind_at(cmdBank));
+            pc_sys_log(" and byte-reversing the version would give ");
+            log_uint(swap16(v));
+            pc_sys_log("\n");
+        }
+    }
+    __real_psInitDataBankLoad(bank, cmdBank, texBank, ref, formBank);
+}
+
 void __real_psInitDataBankLocate(HSD_Archive* cmdBank, HSD_Archive* texBank,
                                  int* formBank);
 void __wrap_psInitDataBankLocate(HSD_Archive* cmdBank, HSD_Archive* texBank,

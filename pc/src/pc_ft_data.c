@@ -56,6 +56,20 @@ static void swap_s32(s32* p)
     *p = (s32) swap32((u32) *p);
 }
 
+static void swap_s16(s16* p)
+{
+    u16 v = (u16) *p;
+    *p = (s16) ((v >> 8) | (v << 8));
+}
+
+static void swap_f32(f32* p)
+{
+    u32 v;
+    memcpy(&v, p, sizeof v);
+    v = swap32(v);
+    memcpy(p, &v, sizeof v);
+}
+
 /* A run of 4-byte fields whose individual types do not matter, because every
    one of them is a float or an int and both reverse the same way. */
 static void swap_words(void* base, size_t bytes)
@@ -284,6 +298,66 @@ static void hurtboxes_to_native(FighterKind kind, struct ftData_x30* h)
     swap_words(h->inits, (size_t) h->count * sizeof *h->inits);
 }
 
+/* ftData::x40 and ::x50 -- the item-pickup offsets and the Vec2 at x2C4,
+ * both copied wholesale into the Fighter by ftCo_800D105C when a fighter's
+ * attributes are initialized:
+ *
+ *     fp->x294_itPickup = *fp->ft_data->x40;
+ *     fp->x2C4          = *fp->ft_data->x50;
+ *
+ * These are converted for the same reason grGroundParam is, and it is the
+ * opposite of the reason for everything else in this file: they would never
+ * announce themselves. Every field is a float, floats do not fault, and a
+ * byte-reversed one is a denormal or an astronomically large number that
+ * makes a fighter hold items in the wrong place rather than crash. itPickup
+ * is three Vec4s and x50 is a single Vec2, so both runs are uniform.
+ */
+static void pickup_to_native(itPickup* p)
+{
+    if (p == NULL || !pc_hsd_claim(p, sizeof *p, PC_HSD_FTPICKUP)) {
+        return;
+    }
+    swap_words(p, sizeof *p);
+}
+
+static void ft_vec2_to_native(Vec2* v)
+{
+    if (v == NULL || !pc_hsd_claim(v, sizeof *v, PC_HSD_FTVEC2)) {
+        return;
+    }
+    swap_words(v, sizeof *v);
+}
+
+/* ftData::x44 -- the six bones the ECB is built from, and the four floats
+ * that size it and the ledge snap.
+ *
+ * Found at `lb_00B0.c:102`, `return jobj->parent` with `jobj = 0x1a1a1a1a`,
+ * reached from `Fighter_Create` through `mpColl_LoadECB_JObj`. `ft_80081B38`
+ * passes `bones[x44->unk0].joint` and five more like it straight into
+ * `mpColl_SetECBSource_JObj`, so a byte-reversed s16 index reads a joint
+ * pointer out of whatever lies past the end of the bone table.
+ *
+ * Worth noting where this sits: unlike almost every stop before it, this one
+ * is not stage-specific. It is on the path every fighter takes into every
+ * match, so nothing else in a match could have run until it was fixed.
+ */
+static void ecb_source_to_native(ftData_x44_t* e)
+{
+    if (e == NULL || !pc_hsd_claim(e, sizeof *e, PC_HSD_FTECBSOURCE)) {
+        return;
+    }
+    swap_s16(&e->unk0);
+    swap_s16(&e->unk2);
+    swap_s16(&e->unk4);
+    swap_s16(&e->unk6);
+    swap_s16(&e->unk8);
+    swap_s16(&e->unkA);
+    swap_f32(&e->unkC);
+    swap_f32(&e->ledge_snap_x);
+    swap_f32(&e->ledge_snap_y);
+    swap_f32(&e->ledge_snap_height);
+}
+
 static void dynamics_to_native(FighterKind kind, struct ftDynamics* d)
 {
     if (d == NULL || !pc_hsd_claim(d, sizeof *d, PC_HSD_FTDYNAMICS)) {
@@ -447,6 +521,9 @@ static void ft_data_to_native(FighterKind kind)
     models_to_native(kind, d->x8);
     hurtboxes_to_native(kind, d->x30);
     dynamics_to_native(kind, d->x2C);
+    pickup_to_native(d->x40);
+    ft_vec2_to_native(d->x50);
+    ecb_source_to_native(d->x44);
     ext_attr_to_native(kind, d->ext_attr);
 }
 

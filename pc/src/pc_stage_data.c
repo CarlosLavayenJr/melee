@@ -33,6 +33,7 @@
 #include <sysdolphin/baselib/archive.h>
 
 #include <melee/gr/types.h>
+#include <melee/lb/types.h>
 #include <melee/mp/types.h>
 
 static u16 swap16(u16 v)
@@ -64,6 +65,18 @@ static void swap_f32(f32* p)
     memcpy(&v, p, sizeof v);
     v = swap32(v);
     memcpy(p, &v, sizeof v);
+}
+
+static void swap_words(void* base, size_t bytes)
+{
+    unsigned char* p = (unsigned char*) base;
+    size_t i;
+    for (i = 0; i + 4 <= bytes; i += 4) {
+        u32 v;
+        memcpy(&v, p + i, sizeof v);
+        v = swap32(v);
+        memcpy(p + i, &v, sizeof v);
+    }
 }
 
 static void log_uint(u32 v)
@@ -107,17 +120,26 @@ static void check_array(const void* base, int count, size_t stride,
    count passes and writes over a neighbour. Recording the ranges turns
    "something in there did it" into a name. Kept small on purpose: this is a
    diagnostic, not bookkeeping the port depends on. */
-#define HEAD_RANGES 64
+#define HEAD_RANGES 512
 static struct {
     const unsigned char* start;
     const unsigned char* end;
     const char* what;
 } head_ranges[HEAD_RANGES];
 static int head_range_count;
+static int head_range_lost;
 
 static void head_wrote(const void* base, size_t bytes, const char* what)
 {
-    if (head_range_count >= HEAD_RANGES || base == NULL || bytes == 0) {
+    if (base == NULL || bytes == 0) {
+        return;
+    }
+    /* A full table would silently turn every later answer into a false
+       negative -- one run reported exactly HEAD_RANGES ranges, which is the
+       shape of a list that stopped recording rather than one that ran out of
+       walks. Count what is dropped and say so alongside the answer. */
+    if (head_range_count >= HEAD_RANGES) {
+        head_range_lost++;
         return;
     }
     head_ranges[head_range_count].start = (const unsigned char*) base;
@@ -155,8 +177,21 @@ static void head_check(const void* p, const char* who)
     log_uint((u32) (uintptr_t) a);
     pc_sys_log(" is in none of the ");
     log_uint((u32) head_range_count);
-    pc_sys_log(" ranges the stage schemas recorded\n");
+    pc_sys_log(" ranges the stage schemas recorded");
+    if (head_range_lost != 0) {
+        pc_sys_log(", but ");
+        log_uint((u32) head_range_lost);
+        pc_sys_log(" more did not fit and were not checked");
+    }
+    pc_sys_log("\n");
 }
+
+/* Defined below, next to the dispatch that arms it. The tripwire caught the
+   stage-param corruption happening somewhere inside this function; these
+   calls narrow it from "the coll_data schema" to one of its four phases. */
+static void watch_check(const char* where);
+static void watch_report_base(const void* base, size_t bytes,
+                              const char* what);
 
 void pc_map_coll_to_native(MapCollData* d)
 {
@@ -165,6 +200,7 @@ void pc_map_coll_to_native(MapCollData* d)
     if (d == NULL || !pc_hsd_claim(d, sizeof *d, PC_HSD_MAPCOLL)) {
         return;
     }
+    watch_report_base(d, sizeof *d, "the MapCollData struct itself");
 
     /* verts, lines and joints are pointers the archive's relocation table
        already converted and Locate() already based. Only the counts and the
@@ -184,21 +220,29 @@ void pc_map_coll_to_native(MapCollData* d)
     swap_s32(&d->joint_count);
     swap_s32(&d->x2C);
 
+    watch_check("the coll_data struct fields");
     if (d->verts != NULL) {
         check_array(d->verts, d->vert_count, sizeof d->verts[0],
                     "vertex count");
         head_wrote(d->verts, (size_t) d->vert_count * sizeof d->verts[0],
                    "coll_data vertex");
+        watch_report_base(d->verts,
+                          (size_t) d->vert_count * sizeof d->verts[0],
+                          "the coll_data vertex array");
         for (i = 0; i < d->vert_count; i++) {
             swap_f32(&d->verts[i].x);
             swap_f32(&d->verts[i].y);
         }
     }
 
+    watch_check("the coll_data vertex walk");
     if (d->lines != NULL) {
         check_array(d->lines, d->line_count, sizeof d->lines[0], "line count");
         head_wrote(d->lines, (size_t) d->line_count * sizeof d->lines[0],
                    "coll_data line");
+        watch_report_base(d->lines,
+                          (size_t) d->line_count * sizeof d->lines[0],
+                          "the coll_data line array");
         for (i = 0; i < d->line_count; i++) {
             MapLine* l = &d->lines[i];
             l->v0_idx = swap16(l->v0_idx);
@@ -212,11 +256,15 @@ void pc_map_coll_to_native(MapCollData* d)
         }
     }
 
+    watch_check("the coll_data line walk");
     if (d->joints != NULL) {
         check_array(d->joints, d->joint_count, sizeof d->joints[0],
                     "joint count");
         head_wrote(d->joints, (size_t) d->joint_count * sizeof d->joints[0],
                    "coll_data joint");
+        watch_report_base(d->joints,
+                          (size_t) d->joint_count * sizeof d->joints[0],
+                          "the coll_data joint array");
         for (i = 0; i < d->joint_count; i++) {
             MapJoint* j = &d->joints[i];
             swap_s16(&j->floor_start);
@@ -542,8 +590,154 @@ void pc_ft_common_data_to_native(void* p);
 /* pc_it_data.c. */
 void pc_it_common_data_to_native(void* p);
 
+/* "dynamicsdata_*": the bone-dynamics setup a few stages hang off their
+ * flags and sails. Found at `lb_00F9.c:171`, a segfault on
+ * `prev->desc.lb_unk0.rotate = jobj->rotate` with `jobj` NULL, reached from
+ * Hyrule Castle's setup through grLib_801C9B20:
+ *
+ *     lb_8000FD48 (jobj=0x0, desc=0x80841920, max_count=100663296)
+ *
+ * 100663296 is 0x06000000, which is 6 with its bytes the other way round.
+ * lb_8000FD48 walks `max_count` bones down a jobj chain and only checks for
+ * NULL once, on entry, so a count of six became a hundred million and the
+ * walk ran off the end of the chain on the seventh step.
+ *
+ * `count` is not the only field: lb_80011710 copies `pos` out of the same
+ * descriptor and then reads `count` rows behind `data`, each one 0x3C bytes
+ * of float -- a Quaternion, two Vec3s and four scalars -- so the rows reverse
+ * uniformly. The row array is declared `array[2]` in a 0x90-byte union but is
+ * really variable-length in the file, which is why the bound comes from
+ * `count` and is checked against the archive before the walk follows it.
+ *
+ * Four symbols across two stages use this: dynamicsdata_flag3/4/6 on Hyrule
+ * Castle and dynamicsdata_shipflag on Rainbow Cruise, so the dispatch matches
+ * on the prefix rather than listing them.
+ */
+static void pc_dynamics_desc_to_native(DynamicsDesc* d)
+{
+    void* rows;
+    size_t bytes;
+
+    if (d == NULL || !pc_hsd_claim(d, sizeof *d, PC_HSD_GRDYNAMICS)) {
+        return;
+    }
+    d->count = swap32(d->count);
+    swap_f32(&d->pos.x);
+    swap_f32(&d->pos.y);
+    swap_f32(&d->pos.z);
+
+    if (d->data == NULL || (s32) d->count <= 0) {
+        return;
+    }
+    /* desc is the first member of DynamicsData, so the rows start where the
+       pointer points. */
+    rows = &d->data->desc.lb_unk1.array[0];
+    bytes = (size_t) d->count * sizeof d->data->desc.lb_unk1.array[0];
+    if (!pc_hsd_in_archive(rows, bytes)) {
+        coll_failed("bone dynamics count", (int) d->count);
+    }
+    swap_words(rows, bytes);
+}
+
 void* __real_HSD_ArchiveGetPublicAddress(HSD_Archive* archive,
                                          const char* symbols);
+
+/* A one-word tripwire on the stage param table.
+ *
+ * The stage-param stop is a single word -- row 0's stkind, which is always
+ * the row the stage being loaded needs -- that is correct when the archive
+ * lands and byte-reversed by the time the schema that converts it runs. Five
+ * runs of after-the-fact range attribution have only ruled suspects out:
+ * every walk this file makes is recorded, the word is inside none of them,
+ * and the word's schema mark has never read anything but "unclaimed", so
+ * nothing here converted it early or twice.
+ *
+ * Ruling suspects out one at a time has stopped paying. This watches the word
+ * itself instead. The address is knowable as soon as map_head is fetched --
+ * grGroundParam can be looked up through the real function, which only reads
+ * the archive's symbol table and converts nothing -- so the tripwire is armed
+ * there and checked on each step of the load. The first check that reports a
+ * change names the step, in one run, without a debugger.
+ *
+ * A hardware watchpoint was tried first and gave frames too unreliable to
+ * name a caller. This gives up the exact instruction in exchange for an
+ * answer that is certain about which step, which is the question that is
+ * actually open.
+ */
+static u32* watch_addr;
+static u32 watch_value;
+
+static void watch_arm(HSD_Archive* archive)
+{
+    GroundParam* gp;
+
+    watch_addr = NULL;
+    gp = (GroundParam*) __real_HSD_ArchiveGetPublicAddress(archive,
+                                                           "grGroundParam");
+    if (gp == NULL || !pc_hsd_in_archive(gp, sizeof *gp)) {
+        return;
+    }
+    /* stage_params is relocation-named, so it is already a host pointer even
+       though nothing has converted the block yet. */
+    if (gp->stage_params == NULL ||
+        !pc_hsd_in_archive(gp->stage_params, sizeof gp->stage_params[0]))
+    {
+        return;
+    }
+    watch_addr = (u32*) &gp->stage_params[0].stkind;
+    memcpy(&watch_value, watch_addr, sizeof watch_value);
+}
+
+/* Says whether a block a schema is about to walk contains the watched word,
+   and how far into it that word sits. "During the coll_data schema" narrows
+   the culprit to one function; this narrows it to one array, and the offset
+   says whether the base is wrong or the count is. */
+static void watch_report_base(const void* base, size_t bytes,
+                              const char* what)
+{
+    const unsigned char* a = (const unsigned char*) watch_addr;
+    const unsigned char* b = (const unsigned char*) base;
+
+    if (watch_addr == NULL || base == NULL) {
+        return;
+    }
+    if (a < b || a >= b + bytes) {
+        return;
+    }
+    pc_sys_log("pc_stage_data: the watched stage param word sits ");
+    log_uint((u32) (size_t) (a - b));
+    pc_sys_log(" bytes into ");
+    pc_sys_log(what);
+    pc_sys_log(", which starts at ");
+    log_uint((u32) (uintptr_t) b);
+    pc_sys_log(" and runs ");
+    log_uint((u32) bytes);
+    pc_sys_log(" bytes\n");
+}
+
+static void watch_check(const char* where)
+{
+    u32 now;
+
+    if (watch_addr == NULL) {
+        return;
+    }
+    memcpy(&now, watch_addr, sizeof now);
+    if (now == watch_value) {
+        return;
+    }
+    pc_sys_log("pc_stage_data: stage param row 0 at ");
+    log_uint((u32) (uintptr_t) watch_addr);
+    pc_sys_log(" changed from ");
+    log_uint(watch_value);
+    pc_sys_log(" to ");
+    log_uint(now);
+    pc_sys_log(" during ");
+    pc_sys_log(where);
+    pc_sys_log("\n");
+    watch_value = now;
+}
+
 void* __wrap_HSD_ArchiveGetPublicAddress(HSD_Archive* archive,
                                          const char* symbols)
 {
@@ -551,11 +745,19 @@ void* __wrap_HSD_ArchiveGetPublicAddress(HSD_Archive* archive,
 
     if (p != NULL && symbols != NULL) {
         if (strcmp(symbols, "coll_data") == 0) {
+            watch_check("the lookup that reached coll_data");
             pc_map_coll_to_native((MapCollData*) p);
+            watch_check("the coll_data schema");
         } else if (strcmp(symbols, "map_head") == 0) {
+            watch_arm(archive);
             pc_stage_head_to_native((UnkStageDat*) p);
+            watch_check("the map_head schema");
         } else if (strcmp(symbols, "grGroundParam") == 0) {
+            watch_check("the lookup that reached grGroundParam");
             pc_ground_param_to_native((GroundParam*) p);
+            watch_addr = NULL;
+        } else if (strncmp(symbols, "dynamicsdata", 12) == 0) {
+            pc_dynamics_desc_to_native((DynamicsDesc*) p);
         } else if (strcmp(symbols, "itemdata") == 0) {
             pc_stage_itemdata_to_native((struct GroundItemData**) p);
         } else if (strcmp(symbols, "map_ptcl") == 0) {
