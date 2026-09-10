@@ -394,8 +394,22 @@ void pc_ground_param_to_native(GroundParam* p)
         }
         check_array(p->stage_params, p->stage_param_count,
                     sizeof p->stage_params[0], "stage param count");
-        for (i = 0; i < p->stage_param_count; i++) {
-            swap_stage_param(&p->stage_params[i]);
+        /* Claim the ARRAY, not just the GroundParam that points at it. Every
+           other schema here claims the object it converts, and this one did
+           not -- so two GroundParams whose stage_params pointers resolve to
+           the same array would each convert it, and the second swap would put
+           it back exactly as it came off the disc. That is precisely what the
+           failing stages show: row 0 reading as the original file bytes while
+           the rest of the archive is fine. Two copies of one archive, one of
+           them relocated against the other's base, would do it, and so would
+           anything else that hands the same array out under two owners. */
+        if (pc_hsd_claim(p->stage_params,
+                         (size_t) p->stage_param_count *
+                             sizeof p->stage_params[0],
+                         PC_HSD_STAGEPARAMS)) {
+            for (i = 0; i < p->stage_param_count; i++) {
+                swap_stage_param(&p->stage_params[i]);
+            }
         }
     }
 }
