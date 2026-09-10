@@ -40,4 +40,16 @@ long pc_sys_pread(int fd, void* buf, unsigned long len,
 
 void pc_sys_close(int fd) { close(fd); }
 
+int pc_sys_env(const char* name, char* buf, unsigned long size)
+{
+    const char* v = getenv(name);
+    unsigned long n;
+    if (!v) return 0;
+    for (n = 0; v[n] && n + 1 < size; n++) buf[n] = v[n];
+    if (v[n]) return 0; /* did not fit */
+    buf[n] = '\0';
+    return 1;
+}
+
 #endif
+

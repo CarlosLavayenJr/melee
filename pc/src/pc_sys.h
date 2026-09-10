@@ -17,6 +17,11 @@ void pc_sys_log(const char* s);
 
 void pc_sys_exit(int code);
 
+/* Read an environment variable into `buf`. Returns 1 when it was set and
+   fitted, 0 otherwise. Exists so host code need not choose between the
+   platform API and a libc the freestanding build does not link. */
+int pc_sys_env(const char* name, char* buf, unsigned long size);
+
 /* Nanoseconds from a monotonic source. Only differences are meaningful. */
 unsigned long long pc_sys_mono_ns(void);
 

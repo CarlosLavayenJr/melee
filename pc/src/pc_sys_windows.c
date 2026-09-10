@@ -115,3 +115,9 @@ void pc_sys_close(int fd)
 }
 
 #endif /* _WIN32 */
+
+int pc_sys_env(const char* name, char* buf, unsigned long size)
+{
+    DWORD n = GetEnvironmentVariableA(name, buf, (DWORD) size);
+    return n != 0 && n < size;
+}

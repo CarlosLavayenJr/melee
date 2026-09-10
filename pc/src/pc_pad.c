@@ -109,6 +109,19 @@ u32 PADRead(PADStatus* status)
     }
 #ifdef _WIN32
     read_keyboard(&status[0]);
+    {
+        /* Scripted input for repeatable tests, off unless PC_INPUT_SCRIPT is
+           set. It is ORed in rather than replacing the keyboard so a person
+           watching can still press things alongside it. See
+           pc/src/pc_input_script.c: this presses buttons, it does not
+           override any scene. */
+        extern unsigned pc_input_script_buttons(void);
+        unsigned scripted = pc_input_script_buttons();
+        if (scripted) {
+            status[0].button |= (u16) scripted;
+            status[0].err = 0;
+        }
+    }
     return 1; /* bit 0: port 0's read completed */
 #else
     return 0; /* bitmask of ports whose read completed */

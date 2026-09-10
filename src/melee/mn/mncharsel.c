@@ -112,7 +112,28 @@ static s8 mnCharSel_804D6CF9;
 #define ICONBNDS_COL8_L 24.4F
 #define ICONBNDS_COL8_R 30.2F
 
-static CSSIconsData mnCharSel_803F0A48 = {
+/* These six were separate statics, and CSSAllData below is cast over the first
+   of them to reach all six as one object -- which only works because the
+   console linker placed them adjacently. A native linker aligns each global on
+   its own: GCC put the doors data at offset 0x3C0 where the code needs 0x3B4,
+   twelve bytes out, and character select then read tags[] out of the middle of
+   another global. The same hazard as card_host_storage.h and THPInit's
+   __THPLCWork672, and handled the same way -- declare the real layout once, as
+   one object, and keep the original names pointing into it. The member order
+   and types are unchanged, so MWCC lays this out exactly as it laid out the
+   separate globals.
+
+   The console addresses in the names give the offsets this has to reproduce:
+   0x803F0A48, 0x803F0DFC (+0x3B4), 0x803F0E8C (+0x444), 0x803F0EBC (+0x474). */
+static struct CSSAllStorage {
+    CSSIconsData icons_data;      /* +0x000 */
+    CSSIcon icon_array[25 + 1];   /* +0x0DC */
+    CSSDoorsData doors;           /* +0x3B4 */
+    CSSTag tags[4];               /* +0x444 */
+    struct CSSDoorsMisc misc;     /* +0x474 */
+    struct CSSDoorsData2 d2;      /* +0x4A4 */
+} css_all_storage = {
+    {
     {
         // GnW Name
         0x82, 0x6C, 0x82, 0x92, // 0x803F0A48
@@ -150,9 +171,9 @@ static CSSIconsData mnCharSel_803F0A48 = {
         { 0x000D, 0x0000, 0x00007534 }, // 0x803F0B14
         { 0x0007, 0x0000, 0x00007532 }  // 0x803F0B1C
     },
-};
+    },
 
-static CSSIcon icons[25 + 1] = {
+    {
     // -------- Icons Top Row --------
 
     { // Dr. Mario -                      0x803F0B24
@@ -261,9 +282,9 @@ static CSSIcon icons[25 + 1] = {
       ICONHUD_EMBLEM, CKIND_EMBLEM, ICONSTATE_UNLOCKED, 0x00, ICONJOINT_EMBLEM,
       ICONJOINT_EMBLEM, 0x000000DA, ICONBNDS_COL7_L, 23.6, ICONROWHT_BTM_TOP,
       ICONROWHT_BTM_BTM }
-};
+    },
 
-static CSSDoorsData mnCharSel_803F0DFC = {
+    {
     { { 0x2E, 0x33, 0x38, 0x85, 0x29,  0xA6,  0x3D,  0x41,
         0x40, 0,    0,    0,    0,     0,     0,     0,
         0,    0,    0,    0,    -35.6, -28.6, -26.8, -21.0F },
@@ -275,21 +296,21 @@ static CSSDoorsData mnCharSel_803F0DFC = {
       { 0x31, 0x36, 0x3B, 0x9D, 0x2C,  0xAC,  0x4F,  0x53,
         0x52, 0x00, 0x00, 0x00, 0x00,  0x00,  0x00,  0x00,
         0x00, 0x00, 0x00, 0x00, 11.0F, 17.0F, 19.0F, 24.6 } },
-};
+    },
 
-static CSSTag mnCharSel_803F0E8C[4] = {
+    {
     { NULL, 0x70, 0x73, 0x74, 0x72, 0x71 },
     { NULL, 0x75, 0x78, 0x79, 0x77, 0x76 },
     { NULL, 0x7A, 0x7D, 0x7E, 0x7C, 0x7B },
     { NULL, 0x7F, 0x82, 0x83, 0x81, 0x80 },
-};
+    },
 
-static struct CSSDoorsMisc mnCharSel_803F0EBC = {
+    {
     0,    0,    0, 0, 0x4A, 0x4D, 0x4E,  0x4C, 0x4B, 0,    0,    0,
     0x2F, 0x01, 0, 0, 0,    NULL, -10.9, -4.2, 12.5, 19.6, -6.8, -12.1,
-};
+    },
 
-static struct CSSDoorsData2 data2 = {
+    {
     { 0x35, 0x39, 0x36, 0x38, 0x37 },
     0,
     0,
@@ -306,7 +327,21 @@ static struct CSSDoorsData2 data2 = {
         { NULL, 8.3, 0x63 },
         { NULL, 23.7, 0x69 },
     },
+    }
 };
+
+_Static_assert(offsetof(struct CSSAllStorage, doors) == 0x3B4, "CSS doors offset");
+_Static_assert(offsetof(struct CSSAllStorage, tags) == 0x444, "CSS tags offset");
+_Static_assert(offsetof(struct CSSAllStorage, misc) == 0x474, "CSS misc offset");
+
+#define mnCharSel_803F0A48 (css_all_storage.icons_data)
+#define mnCharSel_803F0DFC (css_all_storage.doors)
+#define mnCharSel_803F0E8C (css_all_storage.tags)
+#define mnCharSel_803F0EBC (css_all_storage.misc)
+#define data2 (css_all_storage.d2)
+/* `icons` is a pointer rather than a macro on purpose: CSSAllData has a member
+   of the same name, and a macro would rewrite `all_data->icons` too. */
+static CSSIcon* const icons = css_all_storage.icon_array;
 
 typedef struct CSSAllData {
     u8 gnw_name[0x1C];
@@ -315,7 +350,10 @@ typedef struct CSSAllData {
     CSSDoorsData doors_data;    // 0x3B4
     CSSTag tags[4];             // 0x444
     struct CSSDoorsMisc misc;   // 0x474
-    struct CSSDoorsData2 data2; // 0x4A4
+    /* Renamed from data2: the storage aggregate above keeps the original
+       global name as a macro, and a member of the same name would be
+       rewritten by it. Nothing reaches this member through CSSAllData. */
+    struct CSSDoorsData2 doors_data2; // 0x4A4
 } CSSAllData;
 
 #define CSS_ALL ((CSSAllData*) &mnCharSel_803F0A48)

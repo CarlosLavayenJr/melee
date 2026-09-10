@@ -122,4 +122,13 @@ __asm__(".globl _start\n"
         "    and  $-16, %esp\n"
         "    call pc_start_c\n");
 
+/* The freestanding build has no environment to read: it is -nostdlib with raw
+   syscalls, and nothing passes envp down to here. Scripted input is a
+   development aid on the hosted builds. */
+int pc_sys_env(const char* name, char* buf, unsigned long size)
+{
+    (void) name; (void) buf; (void) size;
+    return 0;
+}
+
 #endif
