@@ -335,8 +335,44 @@ Each of these is a byte-order schema, and each was found at a real line:
     recorded in the file**, so a converting schema would have to walk and
     interpret the stream to find its end, which means the schema becomes a
     second implementation of the command decoder and has to agree with the
-    real one. That is an argument for fixing the readers rather than the
-    data.
+    real one.
+
+    The extent problem does have a way out, and it is worth knowing even
+    though the conclusion below makes it moot: `pc_hsd_endian.c` keeps a mark
+    per aligned word and `pc_hsd_claim` returns true exactly once per address,
+    so a helper that claims and swaps **one four-byte unit** is idempotent by
+    construction and can be called as the interpreter walks. No length, no
+    second decoder.
+
+    **But counting the actual read sites settles the design question, and not
+    in favour of converting the data.** `itanimlist.c` alone dereferences
+    `cmd->u` 84 times, and those reads are not three widths but four -- there
+    are raw byte reads as well:
+
+        hit->x40_b4 = ((u8*) cmd->u)[0];
+        hit->x41_b4 = (((u8*) cmd->u)[1] >> 7) & 1;
+        ...
+        hit->x42_b4 = (((u8*) cmd->u)[2] >> 7) & 1;
+
+    A 32-bit swap of the unit leaves the whole-word reads right and breaks the
+    other three kinds: u16 halves come out in the wrong order, single bytes
+    come out reversed within the word, and bitfields still need their
+    declaration order flipped. There is no swap of these bytes that satisfies
+    all four.
+
+    **So the answer is to make the readers endian-aware and leave the stream
+    exactly as it came off the disc.** That means byte-order-explicit accessor
+    macros at every one of those sites in `itanimlist.c` and `ftcmdscript.c`,
+    guarded so the console declarations are untouched -- mechanical, large,
+    and checkable, but not subtle. It is a session's work on its own, which is
+    why it was written down here rather than started at the end of this one.
+
+    One thing that is cheap and should go in first either way: `it_802799E4`
+    indexes `it_803F22A8[opcode - 10]` into a 16-entry table with no bounds
+    check, so a bad opcode jumps to a garbage address (0x000003e8, every
+    time). A range check that reports the opcode and stops is strictly better
+    than that, and it is exactly what the brief asks for -- fail loudly rather
+    than silently do something wrong.
 
 ### The two stops that are live right now, inside the match
 
@@ -413,14 +449,25 @@ spawn-point slots, which is exactly how a fighter ends up standing at
 x = 1601. Fixed in `pc/src/pc_stage_data.c`; `check_array` and `head_wrote`
 now cover the true extent too.
 
-Whether that is the *whole* of this stop is not yet established, and one piece
-of evidence says be careful: a second probe run refused a position for a
-fighter whose own `bone_pos` was a perfectly sane `-28.0, 18.6, 0.0`, and the
-NaN still came in through `sp38`. That is consistent with one bad spawn
-poisoning a camera that both fighters share -- the camera frames all subjects,
-so a second fighter parked at 1601 would do it -- but "consistent with" is not
-"shown". If the assert survives the fix, the next thing to look at is the
-camera's own setup rather than the spawn.
+**That fix has been built and run, and the stop survives it.** Four runs
+after it: two stopped at the item script (stop 13) and two stopped here again,
+at 3 match frames. The joint-pair extent was a real bug and is worth having --
+the arithmetic in `ground.c` is unambiguous and half that array really was
+left big-endian -- but **it is not the cause of this assert.**
+
+The evidence that always pointed away from the spawn is the second probe
+sample: a fighter whose own `bone_pos` was a perfectly sane
+`-28.0, 18.6, 0.0`, with the NaN still arriving through `sp38`. `sp38` comes
+out of `lbVector_8000E838(&interest, &eye_pos, &cam_box->bone_pos, &sp38)`,
+and that function guards its only division against a near-zero length, so
+**`interest` or `eye_pos` was already NaN on the way in**. Those are the game
+camera's own vectors, and nothing about them depends on where a fighter is
+standing.
+
+So the next probe belongs on the camera rather than the fighter: keep the same
+negated-assert condition, print `HSD_CObjGetInterest`'s output and the eye
+position, and walk back to whatever last wrote them. `Camera_800311EC` and
+`fn_800301D0` are the frames above it in every sample taken so far.
 
 `pc/tests/camera_box_probe.gdb` drives the same route and prints the camera
 box, the tolerance, the range and both intermediate vectors at the moment of

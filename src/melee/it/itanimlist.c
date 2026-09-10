@@ -12,6 +12,8 @@
 #include <melee/lb/lb_013B.h>
 #include <melee/lb/lbcommand.h>
 #include <sysdolphin/baselib/gobjproc.h>
+#include <sysdolphin/baselib/debug.h>
+#include <dolphin/os.h>
 
 #ifdef MUST_MATCH
 static void sdata2_order(void)
@@ -352,6 +354,9 @@ void it_802799E4(Item_GObj* item_gobj)
     Item* item = GET_ITEM(item_gobj);
     CommandInfo* cmd = &item->x524_cmd;
     u32 opcode;
+#ifndef MUST_MATCH
+    u32 raw_word = 0;
+#endif
 
     cmd->frame_count = item->x5CC_currentAnimFrame;
     item->xDBC_itcmd_var4_word = 0;
@@ -378,10 +383,42 @@ loop:
     }
 
     opcode = cmd->u->unk0.opcode;
+#ifndef MUST_MATCH
+    /* Kept so the report below can show what the bits actually were. */
+    raw_word = *(u32*) cmd->u;
+#endif
     if (Command_Execute(cmd, opcode) != 0) {
         goto loop;
     }
     opcode -= 10;
+#ifndef MUST_MATCH
+    /* it_803F22A8 has sixteen entries and nothing here checks the index, so
+       an opcode the stream did not really contain jumps to whatever the
+       table's neighbours happen to hold -- in this port, consistently to
+       0x000003e8. That is the worst possible failure: no message, no name,
+       and a backtrace that begins in nowhere.
+
+       The opcodes come out of a bitfield over a big-endian word, and MWCC on
+       PowerPC allocates bitfields from the most significant bit of the
+       storage unit while GCC on x86 allocates from the least, so on this
+       target they are read from the wrong bits entirely. Until the command
+       stream's readers are made endian-aware, say so here rather than
+       jumping. */
+    if ((unsigned) opcode >= 16u) {
+        OSReport("itanimlist.c:%d: item command opcode %d is outside the "
+                 "sixteen-entry handler table (raw opcode %d)\n",
+                 __LINE__, opcode, opcode + 10);
+        /* The command word as it sits in memory, and the opcode read out of
+           it both ways. MWCC on PowerPC puts the first-declared bitfield in
+           the MOST significant bits of a big-endian word, so on console this
+           opcode is the top six bits of the word as stored -- byte 0 shifted
+           right by two. If that number is a sane opcode and the one above is
+           not, the diagnosis is bitfield allocation order and nothing else. */
+        OSReport("             word=%08x as-read=%d as-PowerPC-would-read=%d\n",
+                 raw_word, raw_word & 0x3F, (raw_word >> 24) >> 2);
+        HSD_ASSERT(385, 0);
+    }
+#endif
     it_803F22A8[opcode](item_gobj, cmd);
     goto loop;
 }
