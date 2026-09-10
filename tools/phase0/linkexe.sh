@@ -212,6 +212,7 @@ LDFLAGS="$LDFLAGS -Wl,--wrap=gm_801A4D34 -Wl,--wrap=HSD_PadRenewCopyStatus"
 LDFLAGS="$LDFLAGS -Wl,--wrap=GXSetChanCtrl -Wl,--wrap=GXSetChanMatColor -Wl,--wrap=GXSetChanAmbColor"
 LDFLAGS="$LDFLAGS -Wl,--wrap=GXLoadLightObjImm"
 LDFLAGS="$LDFLAGS -Wl,--wrap=HSD_ArchiveGetPublicAddress"
+LDFLAGS="$LDFLAGS -Wl,--wrap=ftData_8008572C"
 
 WRAPPED="GXBegin GXCallDisplayList GXLoadTexObj GXSetTevOrder GXSetProjection GXLoadPosMtxImm GXCopyDisp"
 # pc_gx_trace.c implements only the list above. pc_gx_render.c implements

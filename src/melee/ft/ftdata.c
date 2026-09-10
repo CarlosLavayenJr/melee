@@ -166,21 +166,46 @@ void ft_8008521C(HSD_GObj* gobj)
     fp->self_vel.z = pos.z - fp->cur_pos.z;
 }
 
+/* &list[FTKIND_MAX] is ft_8045993C, and (u8*) CostumeListsForeachCharacter
+   + 5940 in ft_800852B0 below is ftData_UnkIntPairs: the console linker
+   packed each pair adjacently and MWCC reached the second through the first.
+   config/GALE01/symbols.txt has gFtDataList at 0x804598B8 size 0x84 with
+   ft_8045993C at 0x8045993C -- exactly base + 0x84 -- and
+   CostumeListsForeachCharacter at 0x803C0EC0 size 0x108 with
+   ftData_Table_Unk0 at 0x803C0FC8 (base + 0x108) and ftData_UnkIntPairs at
+   0x803C25F4 (base + 5940). A native linker aligns every global on its own,
+   so the arithmetic lands on whatever GCC placed there and zeroes it: 0x30
+   bytes here and 0x210 in ft_800852B0. Naming the objects is the same
+   address on console and the right one everywhere, and the arithmetic is
+   kept for the matching build. Same hazard as CSSAllStorage in mncharsel.c
+   and card_host_storage.h. */
 static inline void ft_800852B0_Reset_ft_8045993C(ftData** list, int i)
 {
     /// @todo Bitfields seem off
+#ifdef MUST_MATCH
     ((ft_8045993C_t*) &list[FTKIND_MAX])[i].pad_x0 = 0;
     ((ft_8045993C_t*) &list[FTKIND_MAX])[i].x6_b0 = 0;
     ((ft_8045993C_t*) &list[FTKIND_MAX])[i].x6_b1_b2 = 0;
+#else
+    (void) list;
+    ft_8045993C[i].pad_x0 = 0;
+    ft_8045993C[i].x6_b0 = 0;
+    ft_8045993C[i].x6_b1_b2 = 0;
+#endif
 }
 
 void ft_800852B0(void)
 {
     ftData** list;
+#ifdef MUST_MATCH
     ftData_UnkCountStruct* unk0 =
         (ftData_UnkCountStruct*) &CostumeListsForeachCharacter[FTKIND_MAX];
     ftData_UnkCountStruct* pairs =
         (ftData_UnkCountStruct*) ((u8*) CostumeListsForeachCharacter + 5940);
+#else
+    ftData_UnkCountStruct* unk0 = ftData_Table_Unk0;
+    ftData_UnkCountStruct* pairs = ftData_UnkIntPairs;
+#endif
     int i;
     int new_var = 0;
 
