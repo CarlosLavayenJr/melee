@@ -111,15 +111,20 @@ u32 PADRead(PADStatus* status)
     read_keyboard(&status[0]);
     {
         /* Scripted input for repeatable tests, off unless PC_INPUT_SCRIPT is
-           set. It is ORed in rather than replacing the keyboard so a person
-           watching can still press things alongside it. See
-           pc/src/pc_input_script.c: this presses buttons, it does not
-           override any scene. */
-        extern unsigned pc_input_script_buttons(void);
-        unsigned scripted = pc_input_script_buttons();
-        if (scripted) {
-            status[0].button |= (u16) scripted;
-            status[0].err = 0;
+           set. It is layered over the keyboard rather than replacing it, so a
+           person watching can still press things alongside it. See
+           pc/src/pc_input_script.c: this presses buttons and moves the stick,
+           it does not override any scene. */
+        extern void pc_input_script_poll(unsigned* button, s8* sx, s8* sy);
+        unsigned button = 0;
+        s8 sx = 0, sy = 0;
+        pc_input_script_poll(&button, &sx, &sy);
+        status[0].button |= (u16) button;
+        if (sx != 0) {
+            status[0].stickX = sx;
+        }
+        if (sy != 0) {
+            status[0].stickY = sy;
         }
     }
     return 1; /* bit 0: port 0's read completed */

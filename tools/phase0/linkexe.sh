@@ -205,7 +205,10 @@ LDFLAGS="$LDFLAGS -Wl,--wrap=HSD_TObjAddAnim -Wl,--wrap=HSD_TObjAddAnimAll"
 LDFLAGS="$LDFLAGS -Wl,--wrap=HSD_ArchiveParse -Wl,--wrap=lbArchiveRelocate"
 LDFLAGS="$LDFLAGS -Wl,--wrap=psInitDataBankLocate"
 LDFLAGS="$LDFLAGS -Wl,--wrap=GXLoadTlut"
-LDFLAGS="$LDFLAGS -Wl,--wrap=gm_801A4D34"
+# pc_input_script.c takes the live scene from gm_801A4D34 (called once per
+# scene) and its frame clock from HSD_PadRenewCopyStatus, which lb_80019900
+# calls once per frame under the same gate as the scene's on_frame.
+LDFLAGS="$LDFLAGS -Wl,--wrap=gm_801A4D34 -Wl,--wrap=HSD_PadRenewCopyStatus"
 LDFLAGS="$LDFLAGS -Wl,--wrap=GXSetChanCtrl -Wl,--wrap=GXSetChanMatColor -Wl,--wrap=GXSetChanAmbColor"
 LDFLAGS="$LDFLAGS -Wl,--wrap=GXLoadLightObjImm"
 LDFLAGS="$LDFLAGS -Wl,--wrap=HSD_ArchiveGetPublicAddress"
