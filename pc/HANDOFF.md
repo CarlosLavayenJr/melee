@@ -207,13 +207,26 @@ word, which is not the shape of a byte swap at all -- so something is writing
 through a bad pointer rather than converting. Frames were not reliable enough
 to name it.
 
-**Next experiment, and it is cheap:** `pc_stage_head_to_native` walks
-`d->unk0` (joint pairs), `d->unk8` (per-map entries, the newest addition) and
-`d->unk28` (MObj flags). Log the address range each walk is about to touch and
-compare against `stage_params`; or bisect by disabling one walk at a time.
-`check_array` only asks whether a range is inside the archive, and the archive
-is megabytes, so a walk with a wrong base or count stays "valid" while
-writing over a neighbour.
+**That experiment has been run, and it came back negative.**
+`pc_stage_head_to_native` now records the address range of every walk it makes
+(`head_wrote`), and `pc_ground_param_to_native` asks whether
+`stage_params[0]` falls inside any of them (`head_check`). On a failing run --
+Inishie1, 9 rows -- it reported nothing, so the word is not inside anything
+that schema wrote.
+
+**But treat that as weak, not conclusive**, because the check could not
+distinguish "in none of the ranges" from "no ranges were recorded". The
+schema returns early when `map_head` is already claimed, which happens when a
+preloaded archive had its symbol fetched once before, and then the list is
+empty and the question was never really asked. `head_check` now prints the
+range count with its answer, so the next failing run says which it is. That
+build is in and links; the run has not happened.
+
+If the count comes back non-zero, the writer is somewhere else in that call
+entirely, and the next thing to look at is what else touches the archive
+between `map_head` and `grGroundParam` -- `grDatFiles_801C6228`, and the
+`coll_data` fetch that sits between them, whose schema walks vertex, line and
+joint arrays with counts out of the data.
 
 ### OPEN: provenance does not survive an ARAM transfer -- and carrying it made things worse
 

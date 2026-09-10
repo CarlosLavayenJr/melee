@@ -99,6 +99,65 @@ static void check_array(const void* base, int count, size_t stride,
     }
 }
 
+/* Which ranges the map_head schema wrote, so a later stop can ask whether it
+   was written over. A watchpoint put the corruption of stage_params[0]
+   inside the map_head symbol fetch, and the only thing running there is that
+   schema -- but check_array only asks whether a walk stays inside the
+   archive, and the archive is megabytes, so a walk with a wrong base or
+   count passes and writes over a neighbour. Recording the ranges turns
+   "something in there did it" into a name. Kept small on purpose: this is a
+   diagnostic, not bookkeeping the port depends on. */
+#define HEAD_RANGES 64
+static struct {
+    const unsigned char* start;
+    const unsigned char* end;
+    const char* what;
+} head_ranges[HEAD_RANGES];
+static int head_range_count;
+
+static void head_wrote(const void* base, size_t bytes, const char* what)
+{
+    if (head_range_count >= HEAD_RANGES || base == NULL || bytes == 0) {
+        return;
+    }
+    head_ranges[head_range_count].start = (const unsigned char*) base;
+    head_ranges[head_range_count].end = (const unsigned char*) base + bytes;
+    head_ranges[head_range_count].what = what;
+    head_range_count++;
+}
+
+/* Reports, once, if `p` lies in something the map_head schema wrote. */
+static void head_check(const void* p, const char* who)
+{
+    const unsigned char* a = (const unsigned char*) p;
+    int i;
+    for (i = 0; i < head_range_count; i++) {
+        if (a >= head_ranges[i].start && a < head_ranges[i].end) {
+            pc_sys_log("pc_stage_data: ");
+            pc_sys_log(who);
+            pc_sys_log(" at ");
+            log_uint((u32) (uintptr_t) a);
+            pc_sys_log(" lies inside the map_head schema's ");
+            pc_sys_log(head_ranges[i].what);
+            pc_sys_log(" walk, which starts at ");
+            log_uint((u32) (uintptr_t) head_ranges[i].start);
+            pc_sys_log("\n");
+            return;
+        }
+    }
+    /* Nothing matched -- but say how many ranges were on record, because
+       zero means the schema returned early (already claimed) and the
+       question was never really asked. A negative answer from an empty
+       list is not evidence. */
+    pc_sys_log("pc_stage_data: ");
+    pc_sys_log(who);
+    pc_sys_log(" at ");
+    log_uint((u32) (uintptr_t) a);
+    pc_sys_log(" is in none of the ");
+    log_uint((u32) head_range_count);
+    pc_sys_log(" ranges the map_head schema recorded\n");
+}
+
 void pc_map_coll_to_native(MapCollData* d)
 {
     int i;
@@ -186,6 +245,9 @@ void pc_stage_head_to_native(UnkStageDat* d)
     if (d == NULL || !pc_hsd_claim(d, sizeof *d, PC_HSD_STAGEHEAD)) {
         return;
     }
+    /* Fresh per stage: a range from an archive that has since been freed
+       would answer the question wrongly. */
+    head_range_count = 0;
     swap_s32(&d->unk4);
     swap_s32(&d->unkC);
     swap_s32(&d->unk14);
@@ -216,6 +278,9 @@ void pc_stage_head_to_native(UnkStageDat* d)
                 int k;
                 check_array(e[i].pairs, e[i].pair_count, sizeof e[i].pairs[0],
                             "joint pair count");
+                head_wrote(e[i].pairs,
+                           (size_t) e[i].pair_count * sizeof e[i].pairs[0],
+                           "joint pair");
                 for (k = 0; k < e[i].pair_count; k++) {
                     swap_s16(&e[i].pairs[k]);
                 }
@@ -234,6 +299,7 @@ void pc_stage_head_to_native(UnkStageDat* d)
         check_array(d->unk8, d->unkC, sizeof d->unk8[0], "map entry count");
         for (i = 0; i < d->unkC; i++) {
             struct UnkStageDat_x8_t* e = &d->unk8[i];
+            head_wrote(e, sizeof *e, "map entry");
             if (!pc_hsd_claim(e, sizeof *e, PC_HSD_STAGEMAPENTRY)) {
                 continue;
             }
@@ -261,6 +327,9 @@ void pc_stage_head_to_native(UnkStageDat* d)
                 s32 k;
                 check_array(e->unk20, e->unk24, sizeof e->unk20[0],
                             "map entry joint count");
+                head_wrote(e->unk20,
+                           (size_t) e->unk24 * sizeof e->unk20[0],
+                           "map entry joint");
                 for (k = 0; k < e->unk24; k++) {
                     swap_s16(&e->unk20[k].x);
                     swap_s16(&e->unk20[k].y);
@@ -271,6 +340,9 @@ void pc_stage_head_to_native(UnkStageDat* d)
                 int k;
                 check_array(e->x2C, e->x30, sizeof e->x2C[0],
                             "map entry index count");
+                head_wrote(e->x2C,
+                           (size_t) e->x30 * sizeof e->x2C[0],
+                           "map entry index");
                 for (k = 0; k < e->x30; k++) {
                     swap_s16(&e->x2C[k]);
                 }
@@ -288,7 +360,10 @@ void pc_stage_head_to_native(UnkStageDat* d)
            in host order before that happens. */
         /* This is a shallow view of an MObjDesc, not a distinct object.
            Claim only the shared rendermode field; full MObj loading follows. */
-        if (e != NULL) pc_hsd_mobj_flags_to_native(&e->unk4);
+        if (e != NULL) {
+            head_wrote(&e->unk4, sizeof e->unk4, "stage entry flags");
+            pc_hsd_mobj_flags_to_native(&e->unk4);
+        }
     }
 }
 
@@ -384,7 +459,8 @@ void pc_ground_param_to_native(GroundParam* p)
            out right. Something wrote that word first. The mark says which
            schema, by name, instead of leaving it to be guessed -- 0x80 means
            nothing had claimed it, which is the healthy case. */
-        unsigned mark = pc_hsd_kind_at(p->stage_params);
+        head_check(p->stage_params, "stage param row 0");
+                unsigned mark = pc_hsd_kind_at(p->stage_params);
         if (mark != 0x80) {
             pc_sys_log("pc_stage_data: stage param row 0 at ");
             log_uint((u32) (uintptr_t) p->stage_params);
