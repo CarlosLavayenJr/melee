@@ -342,12 +342,25 @@ void pc_stage_head_to_native(UnkStageDat* d)
             swap_s32(&e[i].pair_count);
             if (e[i].pairs != NULL && e[i].pair_count != 0) {
                 int k;
-                check_array(e[i].pairs, e[i].pair_count, sizeof e[i].pairs[0],
+                /* pair_count counts PAIRS, not s16s. The walk in ground.c
+                   runs `for (j = count; j > 0; j--) { target = pair[0]; ...
+                   stage_info.x280[pair[1]] = jobj; pair += 2; }`, taking two
+                   s16 per iteration, so the array is twice as long as the
+                   count says.
+
+                   Converting only half of it left every second entry
+                   big-endian, which put arbitrary stage joints into
+                   stage_info.x280 -- the spawn-point table Ground_801C2D24
+                   reads a fighter's starting position out of. The tell was a
+                   fighter standing at x = 1601 on a stage whose blast zones
+                   are in the low hundreds, and a camera that went NaN trying
+                   to frame it against a fighter at a sane position. */
+                s32 n = e[i].pair_count * 2;
+                check_array(e[i].pairs, n, sizeof e[i].pairs[0],
                             "joint pair count");
-                head_wrote(e[i].pairs,
-                           (size_t) e[i].pair_count * sizeof e[i].pairs[0],
+                head_wrote(e[i].pairs, (size_t) n * sizeof e[i].pairs[0],
                            "joint pair");
-                for (k = 0; k < e[i].pair_count; k++) {
+                for (k = 0; k < n; k++) {
                     swap_s16(&e[i].pairs[k]);
                 }
             }

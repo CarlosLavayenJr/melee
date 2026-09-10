@@ -359,6 +359,69 @@ from three things: `ft_data->x3C` (converted as of this checkpoint),
 comes down from `fn_8016E2BC` into `Fighter_Create`, and where it is read from
 the stage has not been traced. That is the next thing to check.
 
+**The probe has run and it answers most of this.** At the refusal:
+
+    pos3d         = nan nan nan
+    cam_box       = 0x807edea0
+    bone_pos      = 1601.000000 7.050000 0.000000
+    pos           = 1601.000000 17.000000 0.000000
+    ext.v         = 16.000000 -9.000000 11.000000
+    ext.h         = -9.000000 22.000000
+    tolerance     = 15.000000
+    range         = 26.000000
+    sp38          = nan nan nan
+    sp20          = nan nan nan
+
+Two things follow, and they retire the guesses above.
+
+**The camera box itself is healthy.** The extents are small sane numbers and
+`range` is 26, so `ft_data->x3C` and `Stage_GetCamFixedZoom()` are both being
+read correctly -- the x3C conversion added this checkpoint did its job. It is
+not a large float being scaled.
+
+**The NaN comes in from `sp38`, which is the camera's own geometry.** `sp38`
+is the output of
+`lbVector_8000E838(&interest, &eye_pos, &cam_box->bone_pos, &sp38)`, and that
+function guards its only division against a near-zero length, so a
+zero-length normalize is not the path -- `interest` or `eye_pos` was already
+NaN on the way in. Those come from the game camera, not from the fighter.
+
+**And the fighter is at x = 1601.** No Melee stage is a tenth that wide; the
+blast zones are in the low hundreds. So the most likely single cause of both
+symptoms is a wrong spawn position, with the camera going NaN while trying to
+frame one fighter 1601 units away from the other.
+
+**Followed up, and there is a real bug at the end of it: the joint-pair array
+is twice as long as its count.** `stage_info.x280` -- the spawn-point jobj
+table `Ground_801C2D24` reads a fighter's starting position out of -- is
+filled by the walk at `ground.c:1984` from `map_head`'s joint-pair entries:
+
+    count = entry->pair_count;
+    pair  = entry->pairs;
+    for (j = count; j > 0; j--) {
+        target = pair[0];
+        ...
+        stage_info.x280[pair[1]] = jobj;
+        pair += 2;
+    }
+
+`pair_count` counts **pairs**, and the loop takes two s16 per iteration. This
+port's `map_head` schema converted `pair_count` s16s, not `2 * pair_count`, so
+**every second entry stayed big-endian** -- half the joint targets and half
+the slot indices. Arbitrary stage joints therefore landed in arbitrary
+spawn-point slots, which is exactly how a fighter ends up standing at
+x = 1601. Fixed in `pc/src/pc_stage_data.c`; `check_array` and `head_wrote`
+now cover the true extent too.
+
+Whether that is the *whole* of this stop is not yet established, and one piece
+of evidence says be careful: a second probe run refused a position for a
+fighter whose own `bone_pos` was a perfectly sane `-28.0, 18.6, 0.0`, and the
+NaN still came in through `sp38`. That is consistent with one bad spawn
+poisoning a camera that both fighters share -- the camera frames all subjects,
+so a second fighter parked at 1601 would do it -- but "consistent with" is not
+"shown". If the assert survives the fix, the next thing to look at is the
+camera's own setup rather than the spawn.
+
 `pc/tests/camera_box_probe.gdb` drives the same route and prints the camera
 box, the tolerance, the range and both intermediate vectors at the moment of
 the refusal. **Its breakpoint carries the assert's own condition, negated**,
