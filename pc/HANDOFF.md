@@ -49,12 +49,24 @@ newly seen and undiagnosed:
   already host order by the time the callback sees them** -- something on the
   read path converts them -- and byte order is not what is wrong here.
 
-  That moves the suspicion to the other side of the comparison:
-  `hsd_SynthSFXBankHead[]` and `hsd_SynthSFXBank[]`, the port-side bank
-  bookkeeping, one of which is presumably too small or not filled in for
-  later banks. `HSD_DevComRequest(entrynum, 0, buf, 0x20, ...)` is a raw
-  32-byte read from the head of an .ssm file, so the next thing to establish
-  is what those two arrays hold and where they are set.
+  That moves the suspicion to the other side of the comparison, and following
+  it one more step rules out the easy answer there too. The bank sizes come
+  from `HSD_SynthSFXAllocateBank`, called three times from
+  `lbaudio_ax.c:2139-2141` with values built out of `offsets_arr_803BC4E4`
+  and `lbl_80433B44` -- **both compiled-in tables, not file data**, so the
+  bank capacities are not byte-order-affected either.
+
+  What is left is the accumulation: `synth.c:135` does
+  `hsd_SynthSFXBank[bankID] += hsd_SynthSFXLoadBuf[1]` on every load, so bank
+  2 overflowing means either that sum is growing too fast or the bank is
+  being loaded more times than it should. **One detail from the callback
+  arguments is worth chasing first**: it arrives as
+  `(result=525, length=0, addr=0x0)`, and `result` takes a different value
+  every run (9, 525, 533, 565, 573) while `length` and `addr` are always
+  zero. A read that delivered 0x20 bytes should say so. Establishing what
+  this port's `HSD_DevComRequest` actually passes to a completion callback --
+  and whether the buffer was filled at all on the failing runs -- comes
+  before any further theorising about the numbers in it.
 
   **The reason this took so long to see is worth more than the fix.** In a
   gdb batch these runs looked like *silent* exits: the log ended

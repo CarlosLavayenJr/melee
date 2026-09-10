@@ -31,6 +31,13 @@ break __assert
 break abort
 break pc_sys_exit
 break OSPanic
+# PPCHalt is this port's single hard stop, and until now nothing broke on it.
+# HSD_ASSERTREPORT -> OSPanic -> PPCHalt ended five of six runs in one tally
+# and gdb stopped on none of them: the log simply ended and the process was
+# gone with code 1, which read as a silent exit and cost a bisect against an
+# unrelated change. A run that ends with no stop and no output is a reason to
+# run the binary outside gdb, not a reason to believe the silence.
+break PPCHalt
 # ground.c's own "not found stage param" reporter ends in `while (true) {}`,
 # so without this the test hangs instead of failing. Its own OSReports would
 # list the rows, but they come after the point this stops at, so the same list
