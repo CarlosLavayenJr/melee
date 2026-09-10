@@ -286,7 +286,7 @@ Each of these is a byte-order schema, and each was found at a real line:
    `SwordAttrs` and two `UNK_T`; Marth and Roy have a `SwordAttrs`; Samus has
    an `UNK_T`; Mewtwo has nested structs **and a bitfield**, which on this
    target is a second hazard on top of byte order (see stop 15).
-9. **FIXED** "not found stage param" -- `MapCollData::x2C` is an inferred
+9. **PARTLY FIXED** "not found stage param" -- `MapCollData::x2C` is an inferred
     struct member that does not exist, and swapping it byte-reversed the
     first word of the stage param table next door. See the section below;
     this one cost more runs than anything else in the port.
@@ -655,7 +655,14 @@ separates "the schema never reached this" (mark 0x80) from "the schema
 converted it and the format is still wrong" (mark PC_HSD_IMAGE). That build
 is in; the line has not yet appeared in a run.
 
-### FIXED: the stage-param stop was a struct member that does not exist
+### The stage-param stop: one cause found and fixed, and it is NOT the only one
+
+**Read the correction at the end of this section before treating it as
+closed.** A struct member that does not exist accounted for the case that had
+been costing runs all session, and the offset arithmetic for it is
+unambiguous. But the panic has since been seen again, on a stage the
+explanation below cannot reach.
+
 
 **Root cause: `MapCollData::x2C` is not a real field, and this port was
 swapping it.** `mp/types.h` marks it `/* inferred */`, nothing in the game
@@ -693,6 +700,30 @@ Two lessons worth more than the fix:
   `head_wrote` records the three array walks `pc_map_coll_to_native` makes and
   not the fourteen struct-field swaps that run first. The write was invisible
   to the very diagnostic built to catch it.
+
+**CORRECTION, and this is the second time this stop has been called fixed too
+early.** It came back after the fix, on a stage the explanation above cannot
+account for:
+
+    panicMissingStageParam (stkind=St_Kind_MuteCity, count=1)
+
+`count=1` is the tell. The `x2C` bug byte-reversed **row 0 of a multi-row
+table** in an archive where `coll_data` happened to sit 0x2C before
+`stage_params`; it says nothing about a one-row table on a different stage.
+So there is at least one more cause, and what is fixed is one of them.
+
+Two things make this cheap to pick up. `pc/tests/match_smoke.gdb` already
+dumps every row's `stkind` before giving up, so **the next Mute City run says
+immediately whether the single row is byte-reversed, is a plausible StKind
+that simply is not Mute City, or is something else entirely** -- three very
+different causes. And the tripwire is still armed and still reports, so if
+something writes that word during the load it will name the step, exactly as
+it did for `x2C`.
+
+The discipline that should have been applied the first time and was not, twice
+now: **do not write FIXED for a stop that appears on a random stage until it
+has been absent across runs that drew several different stages.** The root
+cause being certain is not the same as the stop being gone.
 
 ### The tripwire, and why it beat five runs of range attribution
 
