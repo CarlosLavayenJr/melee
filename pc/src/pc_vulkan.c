@@ -45,7 +45,15 @@ static VkSemaphore sem_image_available;
 static VkSemaphore sem_render_finished;
 static VkFence fence_in_flight;
 
-static VkClearValue clear_value;
+static VkClearValue clear_values[2];
+#define clear_value (clear_values[0])
+/* Depth attachment. The framebuffer had none, so every draw that enabled a
+   real depth comparison was discarded -- 7033 of them across 240 menu frames.
+   Rebuilt with the swapchain, since it has to match its extent. */
+static VkImage depth_image;
+static VkDeviceMemory depth_memory;
+static VkImageView depth_view;
+static VkFormat depth_format = VK_FORMAT_D32_SFLOAT;
 static int frame_active;
 static int swapchain_dirty;
 static int can_capture;
@@ -426,6 +434,81 @@ static int create_surface(void)
  * Rebuildable independently of instance/device/surface, since a window
  * resize needs exactly this and nothing above it. */
 
+static void destroy_depth_buffer(void)
+{
+    if (depth_view != VK_NULL_HANDLE) {
+        vkDestroyImageView(device, depth_view, NULL);
+        depth_view = VK_NULL_HANDLE;
+    }
+    if (depth_image != VK_NULL_HANDLE) {
+        vkDestroyImage(device, depth_image, NULL);
+        depth_image = VK_NULL_HANDLE;
+    }
+    if (depth_memory != VK_NULL_HANDLE) {
+        vkFreeMemory(device, depth_memory, NULL);
+        depth_memory = VK_NULL_HANDLE;
+    }
+}
+
+static int create_depth_buffer(void)
+{
+    VkImageCreateInfo ici;
+    VkMemoryRequirements req;
+    VkMemoryAllocateInfo mai;
+    VkImageViewCreateInfo vci;
+    VkPhysicalDeviceMemoryProperties props;
+    unsigned i;
+
+    destroy_depth_buffer();
+
+    ZeroMemory(&ici, sizeof(ici));
+    ici.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    ici.imageType = VK_IMAGE_TYPE_2D;
+    ici.format = depth_format;
+    ici.extent.width = swapchain_extent.width;
+    ici.extent.height = swapchain_extent.height;
+    ici.extent.depth = 1;
+    ici.mipLevels = 1;
+    ici.arrayLayers = 1;
+    ici.samples = VK_SAMPLE_COUNT_1_BIT;
+    ici.tiling = VK_IMAGE_TILING_OPTIMAL;
+    ici.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    ici.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VK_CHECK(vkCreateImage(device, &ici, NULL, &depth_image), "depth image");
+
+    vkGetImageMemoryRequirements(device, depth_image, &req);
+    vkGetPhysicalDeviceMemoryProperties(phys_device, &props);
+    for (i = 0; i < props.memoryTypeCount; i++) {
+        if ((req.memoryTypeBits & (1u << i)) &&
+            (props.memoryTypes[i].propertyFlags &
+             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
+            break;
+        }
+    }
+    if (i == props.memoryTypeCount) {
+        pc_sys_log("pc_vulkan: no device-local memory for the depth buffer\n");
+        return 1;
+    }
+    ZeroMemory(&mai, sizeof(mai));
+    mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    mai.allocationSize = req.size;
+    mai.memoryTypeIndex = i;
+    VK_CHECK(vkAllocateMemory(device, &mai, NULL, &depth_memory), "depth memory");
+    VK_CHECK(vkBindImageMemory(device, depth_image, depth_memory, 0), "depth bind");
+
+    ZeroMemory(&vci, sizeof(vci));
+    vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    vci.image = depth_image;
+    vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    vci.format = depth_format;
+    vci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+    vci.subresourceRange.levelCount = 1;
+    vci.subresourceRange.layerCount = 1;
+    VK_CHECK(vkCreateImageView(device, &vci, NULL, &depth_view), "depth view");
+    return 0;
+}
+
 static void destroy_swapchain_views(void)
 {
     unsigned int i;
@@ -443,42 +526,60 @@ static void destroy_swapchain_views(void)
 
 static int create_render_pass(void)
 {
-    VkAttachmentDescription color;
-    VkAttachmentReference color_ref;
+    VkAttachmentDescription attachments[2];
+    VkAttachmentDescription* color = &attachments[0];
+    VkAttachmentDescription* depth = &attachments[1];
+    VkAttachmentReference color_ref, depth_ref;
     VkSubpassDescription subpass;
     VkSubpassDependency dependency;
     VkRenderPassCreateInfo ci;
 
-    ZeroMemory(&color, sizeof(color));
-    color.format = swapchain_format;
-    color.samples = VK_SAMPLE_COUNT_1_BIT;
-    color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    color.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    color.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    color.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    color.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    ZeroMemory(attachments, sizeof(attachments));
+    color->format = swapchain_format;
+    color->samples = VK_SAMPLE_COUNT_1_BIT;
+    color->loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    color->storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    color->stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    color->stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    color->initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    color->finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+    depth->format = depth_format;
+    depth->samples = VK_SAMPLE_COUNT_1_BIT;
+    depth->loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    /* Nothing reads depth after the frame; the copy path only takes colour. */
+    depth->storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depth->stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    depth->stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    depth->initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    depth->finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
     color_ref.attachment = 0;
     color_ref.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    depth_ref.attachment = 1;
+    depth_ref.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
     ZeroMemory(&subpass, sizeof(subpass));
     subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
     subpass.colorAttachmentCount = 1;
     subpass.pColorAttachments = &color_ref;
+    subpass.pDepthStencilAttachment = &depth_ref;
 
     ZeroMemory(&dependency, sizeof(dependency));
     dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
     dependency.dstSubpass = 0;
-    dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                              VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
     dependency.srcAccessMask = 0;
-    dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                              VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+    dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                               VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 
     ZeroMemory(&ci, sizeof(ci));
     ci.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-    ci.attachmentCount = 1;
-    ci.pAttachments = &color;
+    ci.attachmentCount = 2;
+    ci.pAttachments = attachments;
     ci.subpassCount = 1;
     ci.pSubpasses = &subpass;
     ci.dependencyCount = 1;
@@ -563,6 +664,11 @@ static int create_swapchain(void)
                                      swapchain_images),
              "vkGetSwapchainImagesKHR");
 
+    /* Before the framebuffers below, which reference its view. */
+    if (create_depth_buffer()) {
+        return 1;
+    }
+
     for (i = 0; i < swapchain_image_count; i++) {
         VkImageViewCreateInfo vci;
         VkFramebufferCreateInfo fci;
@@ -582,17 +688,22 @@ static int create_swapchain(void)
         VK_CHECK(vkCreateImageView(device, &vci, NULL, &swapchain_views[i]),
                  "vkCreateImageView");
 
-        ZeroMemory(&fci, sizeof(fci));
-        fci.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-        fci.renderPass = render_pass;
-        fci.attachmentCount = 1;
-        fci.pAttachments = &swapchain_views[i];
-        fci.width = swapchain_extent.width;
-        fci.height = swapchain_extent.height;
-        fci.layers = 1;
-        VK_CHECK(vkCreateFramebuffer(device, &fci, NULL,
-                                     &swapchain_framebuffers[i]),
-                 "vkCreateFramebuffer");
+        {
+            VkImageView views[2];
+            views[0] = swapchain_views[i];
+            views[1] = depth_view;
+            ZeroMemory(&fci, sizeof(fci));
+            fci.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+            fci.renderPass = render_pass;
+            fci.attachmentCount = 2;
+            fci.pAttachments = views;
+            fci.width = swapchain_extent.width;
+            fci.height = swapchain_extent.height;
+            fci.layers = 1;
+            VK_CHECK(vkCreateFramebuffer(device, &fci, NULL,
+                                         &swapchain_framebuffers[i]),
+                     "vkCreateFramebuffer");
+        }
     }
 
     swapchain_dirty = 0;
@@ -734,8 +845,11 @@ VkCommandBuffer pc_vulkan_begin_frame(void)
     rpbi.renderPass = render_pass;
     rpbi.framebuffer = swapchain_framebuffers[current_image_index];
     rpbi.renderArea.extent = swapchain_extent;
-    rpbi.clearValueCount = 1;
-    rpbi.pClearValues = &clear_value;
+    /* GX clears depth to the far plane with the colour clear. */
+    clear_values[1].depthStencil.depth = 1.0f;
+    clear_values[1].depthStencil.stencil = 0;
+    rpbi.clearValueCount = 2;
+    rpbi.pClearValues = clear_values;
     vkCmdBeginRenderPass(command_buffer, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
 
     frame_active = 1;

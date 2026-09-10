@@ -271,10 +271,9 @@ int pc_gx_material_get(pc_gx_material* out)
         if (tex) out->texture_mask |= 1u << (order & 7);
     }
     if (blend & (2 | 2048)) return unsupported(5, "logic/subtract blending");
-    if ((blend & 1) && (((blend >> 8) & 7) != 4 || ((blend >> 5) & 7) != 5))
-        return unsupported(6, "blend factors other than source-alpha/inverse-source-alpha");
-    if ((bp[0x40] & 1) && ((bp[0x40] >> 1) & 7) != 7)
-        return unsupported(7, "depth comparison needs depth attachment");
+    /* Blend factors and the depth comparison are pipeline state, not shader
+       code: pc_gx_fifo.c builds a pipeline per distinct combination now, so
+       both are carried in the key rather than rejected. */
     if ((bp[0xf1] >> 21) & 7) return unsupported(8, "fog");
     if ((bp[0xf5] >> 2) & 3) return unsupported(11, "depth-texture operation");
     for (i = 0; i < 4; ++i) {
@@ -284,7 +283,16 @@ int pc_gx_material_get(pc_gx_material* out)
         out->registers[i][1] = signed11(tev_registers[2*i+1] >> 12);
     }
     out->compare = bp[0xf3];
-    out->pipeline_key = (blend & 1) | ((blend >> 2) & 6) | (((bp[0] >> 14) & 3) << 3);
+    /* key: blend enable, colour/alpha write masks, cull, source factor,
+       destination factor, depth test/write/compare. pc_gx_fifo.c's
+       pipeline_for decodes exactly these fields. */
+    out->pipeline_key = (blend & 1) | ((blend >> 2) & 6) |
+                        (((bp[0] >> 14) & 3) << 3) |
+                        ((((blend >> 8) & 7)) << 5) |
+                        ((((blend >> 5) & 7)) << 8) |
+                        ((bp[0x40] & 1) << 11) |
+                        ((((bp[0x40] >> 4) & 1)) << 12) |
+                        ((((bp[0x40] >> 1) & 7)) << 13);
     draws_accepted++;
     return 1;
 }

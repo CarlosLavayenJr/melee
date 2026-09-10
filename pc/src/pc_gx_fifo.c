@@ -367,7 +367,15 @@ static void skip_direct(reader_t* r, GXAttr attr, const pc_vat_fmt_t* vf)
    time a draw actually happens (GXInit runs long before any vertex format
    is configured, so there is nothing to build a pipeline against yet). */
 static VkPipelineLayout pipeline_layout;
-static VkPipeline pipeline[32];
+/* Cache of pipelines keyed by the GX state they encode. Linear search: a
+   frame touches a handful of distinct states, and a miss costs a pipeline
+   creation anyway. */
+#define PC_MAX_PIPELINES 64
+static struct pipeline_entry {
+    unsigned key;
+    VkPipeline pipeline;
+} pipeline_cache[PC_MAX_PIPELINES];
+static unsigned pipeline_cache_count;
 static VkBuffer vertex_vbo;
 static VkDeviceMemory vertex_vbo_mem;
 static int pipeline_ready;
@@ -387,26 +395,34 @@ static unsigned int find_memory_type(VkPhysicalDevice phys, unsigned int type_bi
     return 0;
 }
 
+/* Pipeline state that varies per draw no longer fits an enumeration: eight GX
+   source factors by eight destination factors by eight depth comparisons, on
+   top of cull mode and the write masks, is tens of thousands of combinations
+   of which a frame uses a handful. So pipelines are built on demand and cached
+   by key, and the create-info structures they point at live here rather than
+   on ensure_pipeline's stack. */
+static VkShaderModule vert_mod, frag_mod;
+static VkPipelineShaderStageCreateInfo stages[2];
+static VkVertexInputBindingDescription binding;
+static VkVertexInputAttributeDescription attrs[3];
+static VkPipelineVertexInputStateCreateInfo vin;
+static VkPipelineInputAssemblyStateCreateInfo ia;
+static VkPipelineViewportStateCreateInfo vp;
+static VkPipelineRasterizationStateCreateInfo rs;
+static VkPipelineMultisampleStateCreateInfo ms;
+static VkPipelineColorBlendAttachmentState cba;
+static VkPipelineColorBlendStateCreateInfo cb;
+static VkPipelineDepthStencilStateCreateInfo ds;
+static VkDynamicState dyn_states[2];
+static VkPipelineDynamicStateCreateInfo dyn;
+static VkGraphicsPipelineCreateInfo gpci;
+
 static int ensure_pipeline(void)
 {
     VkDevice dev;
     VkShaderModuleCreateInfo smci;
-    VkShaderModule vert_mod, frag_mod;
-    VkPipelineShaderStageCreateInfo stages[2];
-    VkVertexInputBindingDescription binding;
-    VkVertexInputAttributeDescription attrs[3];
-    VkPipelineVertexInputStateCreateInfo vin;
-    VkPipelineInputAssemblyStateCreateInfo ia;
-    VkPipelineViewportStateCreateInfo vp;
-    VkPipelineRasterizationStateCreateInfo rs;
-    VkPipelineMultisampleStateCreateInfo ms;
-    VkPipelineColorBlendAttachmentState cba;
-    VkPipelineColorBlendStateCreateInfo cb;
-    VkDynamicState dyn_states[2];
-    VkPipelineDynamicStateCreateInfo dyn;
     VkPushConstantRange pcr;
     VkPipelineLayoutCreateInfo plci;
-    VkGraphicsPipelineCreateInfo gpci;
     VkBufferCreateInfo bci;
     VkMemoryRequirements mreq;
     VkMemoryAllocateInfo mai;
@@ -553,23 +569,13 @@ static int ensure_pipeline(void)
     gpci.renderPass = pc_vulkan_render_pass();
     gpci.subpass = 0;
 
-    for (unsigned key = 0; key < 32; ++key) {
-        /* GXSetCullMode exchanges FRONT/BACK before writing BP genMode. */
-        static const VkCullModeFlags cull[4] = {VK_CULL_MODE_NONE, VK_CULL_MODE_BACK_BIT,
-            VK_CULL_MODE_FRONT_BIT, VK_CULL_MODE_FRONT_AND_BACK};
-        rs.cullMode = cull[key >> 3];
-        cba.blendEnable = key & 1;
-        cba.srcColorBlendFactor = cba.srcAlphaBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-        cba.dstColorBlendFactor = cba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-        cba.colorBlendOp = cba.alphaBlendOp = VK_BLEND_OP_ADD;
-        cba.colorWriteMask = ((key & 2) ? 7 : 0) | ((key & 4) ? 8 : 0);
-        if (vkCreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gpci, NULL,
-                                      &pipeline[key]) != VK_SUCCESS) {
-            pc_sys_log("pc_gx_fifo: graphics pipeline creation failed\n"); return 1;
-        }
-    }
-    vkDestroyShaderModule(dev, vert_mod, NULL);
-    vkDestroyShaderModule(dev, frag_mod, NULL);
+    cba.colorBlendOp = cba.alphaBlendOp = VK_BLEND_OP_ADD;
+    memset(&ds, 0, sizeof ds);
+    ds.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    ds.maxDepthBounds = 1.0f;
+    gpci.pDepthStencilState = &ds;
+    /* The shader modules deliberately stay alive: pipelines are created on
+       demand from here on, not enumerated up front. */
 
     /* Host-visible vertex buffer, big enough for the largest single draw
        this milestone allows (PC_MAX_VERTS) -- simple over efficient, same
@@ -621,6 +627,74 @@ static int ensure_pipeline(void)
 
 /* Uploads vertex_buf[0..count) and issues one draw. cmd is the command
    buffer pc_gx_render.c's ensure_frame() already opened this frame. */
+/* GX blend factors, in GXBlendFactor order. GX names the destination-side
+   aliases GX_BL_DSTCLR/GX_BL_INVDSTCLR for the same 2 and 3 slots, so the
+   source and destination tables differ in exactly those two entries: the
+   "other" colour is whichever one this side is not. */
+static const VkBlendFactor gx_src_factor[8] = {
+    VK_BLEND_FACTOR_ZERO, VK_BLEND_FACTOR_ONE,
+    VK_BLEND_FACTOR_DST_COLOR, VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR,
+    VK_BLEND_FACTOR_SRC_ALPHA, VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+    VK_BLEND_FACTOR_DST_ALPHA, VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA
+};
+static const VkBlendFactor gx_dst_factor[8] = {
+    VK_BLEND_FACTOR_ZERO, VK_BLEND_FACTOR_ONE,
+    VK_BLEND_FACTOR_SRC_COLOR, VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR,
+    VK_BLEND_FACTOR_SRC_ALPHA, VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+    VK_BLEND_FACTOR_DST_ALPHA, VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA
+};
+/* GXCompare order. */
+static const VkCompareOp gx_compare[8] = {
+    VK_COMPARE_OP_NEVER, VK_COMPARE_OP_LESS, VK_COMPARE_OP_EQUAL,
+    VK_COMPARE_OP_LESS_OR_EQUAL, VK_COMPARE_OP_GREATER,
+    VK_COMPARE_OP_NOT_EQUAL, VK_COMPARE_OP_GREATER_OR_EQUAL,
+    VK_COMPARE_OP_ALWAYS
+};
+
+static VkPipeline pipeline_for(unsigned key)
+{
+    /* GXSetCullMode exchanges FRONT/BACK before writing BP genMode. */
+    static const VkCullModeFlags cull[4] = {
+        VK_CULL_MODE_NONE, VK_CULL_MODE_BACK_BIT,
+        VK_CULL_MODE_FRONT_BIT, VK_CULL_MODE_FRONT_AND_BACK
+    };
+    unsigned i;
+    VkPipeline created;
+
+    for (i = 0; i < pipeline_cache_count; ++i) {
+        if (pipeline_cache[i].key == key) return pipeline_cache[i].pipeline;
+    }
+    if (pipeline_cache_count == PC_MAX_PIPELINES) {
+        static int warned;
+        if (!warned) {
+            warned = 1;
+            pc_sys_log("pc_gx_fifo: pipeline cache full; draw skipped\n");
+        }
+        return VK_NULL_HANDLE;
+    }
+
+    cba.blendEnable = key & 1;
+    cba.colorWriteMask = ((key & 2) ? 7 : 0) | ((key & 4) ? 8 : 0);
+    rs.cullMode = cull[(key >> 3) & 3];
+    cba.srcColorBlendFactor = cba.srcAlphaBlendFactor =
+        gx_src_factor[(key >> 5) & 7];
+    cba.dstColorBlendFactor = cba.dstAlphaBlendFactor =
+        gx_dst_factor[(key >> 8) & 7];
+    ds.depthTestEnable = (key >> 11) & 1;
+    ds.depthWriteEnable = (key >> 12) & 1;
+    ds.depthCompareOp = gx_compare[(key >> 13) & 7];
+
+    if (vkCreateGraphicsPipelines(pc_vulkan_device(), VK_NULL_HANDLE, 1, &gpci,
+                                  NULL, &created) != VK_SUCCESS) {
+        pc_sys_log("pc_gx_fifo: graphics pipeline creation failed\n");
+        return VK_NULL_HANDLE;
+    }
+    pipeline_cache[pipeline_cache_count].key = key;
+    pipeline_cache[pipeline_cache_count].pipeline = created;
+    pipeline_cache_count++;
+    return created;
+}
+
 static void flush_draw(VkCommandBuffer cmd, unsigned int count)
 {
     void* mapped;
@@ -721,7 +795,11 @@ static void flush_draw(VkCommandBuffer cmd, unsigned int count)
     scissor.extent.width = width;
     scissor.extent.height = height;
 
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline[material.pipeline_key]);
+    {
+        VkPipeline p = pipeline_for(material.pipeline_key);
+        if (p == VK_NULL_HANDLE) return;
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p);
+    }
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1, &descriptor, 0, NULL);
     vkCmdSetViewport(cmd, 0, 1, &viewport);
     vkCmdSetScissor(cmd, 0, 1, &scissor);
