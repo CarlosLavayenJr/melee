@@ -72,6 +72,14 @@ static float proj_mtx[4][4] = {
 void pc_gx_fifo_set_pos_mtx(float m[3][4]) { memcpy(pos_mtx, m, sizeof pos_mtx); }
 void pc_gx_fifo_set_proj_mtx(float m[4][4]) { memcpy(proj_mtx, m, sizeof proj_mtx); }
 
+/* Whether the vertex stream currently supplies a second colour. Asked by
+   pc_gx_material.c when it rejects a draw for using raster channel 1, to tell
+   "the data is there and unread" from "the channel comes from lighting". */
+int pc_gx_fifo_vtx_has_clr1(void)
+{
+    return vtx_desc[GX_VA_CLR1] != GX_NONE;
+}
+
 void __real_GXSetVtxDesc(GXAttr attr, GXAttrType type);
 void __wrap_GXSetVtxDesc(GXAttr attr, GXAttrType type)
 {

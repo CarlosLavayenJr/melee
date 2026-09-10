@@ -31,6 +31,64 @@ void pc_gx_bp_write(unsigned int value)
     }
     mask = 0xffffff;
 }
+/* Channel 1, which no vertex in the menu supplies a colour for: all 7280
+   draws rejected for raster channel 1 were measured to have no GX_VA_CLR1 in
+   the vertex descriptor, so the channel is produced by the lighting/channel
+   control path rather than read from the vertex. Record what that path is
+   actually configured as before implementing any of it. */
+static struct chan_config {
+    unsigned chan, enable, amb_src, mat_src, light_mask, diff_fn, attn_fn;
+    unsigned count;
+} chan_seen[16];
+static unsigned chan_seen_count;
+static unsigned char chan_mat_color[4][4], chan_amb_color[4][4];
+
+void __real_GXSetChanCtrl(GXChannelID chan, GXBool enable, GXColorSrc amb_src,
+                          GXColorSrc mat_src, u32 light_mask,
+                          GXDiffuseFn diff_fn, GXAttnFn attn_fn);
+void __wrap_GXSetChanCtrl(GXChannelID chan, GXBool enable, GXColorSrc amb_src,
+                          GXColorSrc mat_src, u32 light_mask,
+                          GXDiffuseFn diff_fn, GXAttnFn attn_fn)
+{
+    unsigned i;
+    for (i = 0; i < chan_seen_count; ++i) {
+        struct chan_config* c = &chan_seen[i];
+        if (c->chan == (unsigned) chan && c->enable == (unsigned) enable &&
+            c->amb_src == (unsigned) amb_src && c->mat_src == (unsigned) mat_src &&
+            c->light_mask == light_mask && c->diff_fn == (unsigned) diff_fn &&
+            c->attn_fn == (unsigned) attn_fn) { c->count++; goto done; }
+    }
+    if (chan_seen_count < 16) {
+        struct chan_config* c = &chan_seen[chan_seen_count++];
+        c->chan = chan; c->enable = enable; c->amb_src = amb_src;
+        c->mat_src = mat_src; c->light_mask = light_mask;
+        c->diff_fn = diff_fn; c->attn_fn = attn_fn; c->count = 1;
+    }
+done:
+    __real_GXSetChanCtrl(chan, enable, amb_src, mat_src, light_mask, diff_fn,
+                         attn_fn);
+}
+
+void __real_GXSetChanMatColor(GXChannelID chan, GXColor c);
+void __wrap_GXSetChanMatColor(GXChannelID chan, GXColor c)
+{
+    if ((unsigned) chan < 4) {
+        chan_mat_color[chan][0] = c.r; chan_mat_color[chan][1] = c.g;
+        chan_mat_color[chan][2] = c.b; chan_mat_color[chan][3] = c.a;
+    }
+    __real_GXSetChanMatColor(chan, c);
+}
+
+void __real_GXSetChanAmbColor(GXChannelID chan, GXColor c);
+void __wrap_GXSetChanAmbColor(GXChannelID chan, GXColor c)
+{
+    if ((unsigned) chan < 4) {
+        chan_amb_color[chan][0] = c.r; chan_amb_color[chan][1] = c.g;
+        chan_amb_color[chan][2] = c.b; chan_amb_color[chan][3] = c.a;
+    }
+    __real_GXSetChanAmbColor(chan, c);
+}
+
 /* Distinct texgen configurations the game actually asks for, with counts.
    Non-identity texgen is 87% of every skipped menu draw, and "non-identity"
    covers a large space -- 2x4 vs 3x4, eight sources, a texture matrix, a
@@ -143,6 +201,7 @@ void __wrap_GXSetTexCoordGen2(GXTexCoordID id, GXTexGenType type, GXTexGenSrc sr
 static unsigned skip_counts[16];
 static const char* skip_reason[16];
 static unsigned draws_accepted;
+static unsigned raster_ch1_with_clr1, raster_ch1_no_clr1;
 
 static int unsupported(unsigned bit, const char* reason)
 {
@@ -178,6 +237,46 @@ void pc_gx_material_report(void)
         report_uint(skip_counts[i]);
         pc_sys_log(" x ");
         pc_sys_log(skip_reason[i]);
+        pc_sys_log("\n");
+    }
+    if (raster_ch1_with_clr1 || raster_ch1_no_clr1) {
+        pc_sys_log("  of those, channel 1 with a vertex CLR1: ");
+        report_uint(raster_ch1_with_clr1);
+        pc_sys_log(", without: ");
+        report_uint(raster_ch1_no_clr1);
+        pc_sys_log("\n");
+    }
+    if (raster_ch1_with_clr1 || raster_ch1_no_clr1) {
+        pc_sys_log("  of those, channel 1 with a vertex CLR1: ");
+        report_uint(raster_ch1_with_clr1);
+        pc_sys_log(", without: ");
+        report_uint(raster_ch1_no_clr1);
+        pc_sys_log("\n");
+    }
+    for (i = 0; i < chan_seen_count; ++i) {
+        struct chan_config* c = &chan_seen[i];
+        pc_sys_log("  chan ");        report_uint(c->chan);
+        pc_sys_log(" lit=");          report_uint(c->enable);
+        pc_sys_log(" amb=");          report_uint(c->amb_src);
+        pc_sys_log(" mat=");          report_uint(c->mat_src);
+        pc_sys_log(" lights=");       report_uint(c->light_mask);
+        pc_sys_log(" diff=");         report_uint(c->diff_fn);
+        pc_sys_log(" attn=");         report_uint(c->attn_fn);
+        pc_sys_log(" x");             report_uint(c->count);
+        pc_sys_log("\n");
+    }
+    for (i = 1; i < 4; i += 2) {
+        pc_sys_log("  chan ");        report_uint(i);
+        pc_sys_log(" mat rgba ");
+        report_uint(chan_mat_color[i][0]); pc_sys_log(",");
+        report_uint(chan_mat_color[i][1]); pc_sys_log(",");
+        report_uint(chan_mat_color[i][2]); pc_sys_log(",");
+        report_uint(chan_mat_color[i][3]);
+        pc_sys_log(" amb rgba ");
+        report_uint(chan_amb_color[i][0]); pc_sys_log(",");
+        report_uint(chan_amb_color[i][1]); pc_sys_log(",");
+        report_uint(chan_amb_color[i][2]); pc_sys_log(",");
+        report_uint(chan_amb_color[i][3]);
         pc_sys_log("\n");
     }
     for (i = 0; i < texgen_seen_count; ++i) {
@@ -261,8 +360,14 @@ int pc_gx_material_get(pc_gx_material* out)
         if ((tex && (ta & 12)) || (ras && (ta & 3))) return unsupported(4, "TEV swap table");
         if ((tex || ras) && ((bp[0xf6] & 15) != 4 || (bp[0xf7] & 15) != 14))
             return unsupported(4, "non-identity TEV swap table");
-        if (ras && raster != 0 && raster != 7)
+        if (ras && raster != 0 && raster != 7) {
+            extern int pc_gx_fifo_vtx_has_clr1(void);
+            if (raster == 1) {
+                if (pc_gx_fifo_vtx_has_clr1()) raster_ch1_with_clr1++;
+                else raster_ch1_no_clr1++;
+            }
             return unsupported(9, "raster channel other than COLOR0 or ZERO");
+        }
         if (!resolve_konst(out->konst[j], ksel & 31, (ksel >> 5) & 31, kc, ka))
             return unsupported(2, "reserved konst selector");
         out->stages[j][0] = tc; out->stages[j][1] = ta;

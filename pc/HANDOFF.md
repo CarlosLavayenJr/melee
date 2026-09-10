@@ -1,76 +1,84 @@
 # Handoff — September 10, 2026 checkpoint
 
-## Latest: the main menu renders
+## The main menu renders; the remaining gap needs GX lighting
 
-`build/menu-smoke.bmp` at menu frame 120 now shows the real main menu -- the
-five items (1-P Mode, VS. Mode, Trophies, Options, Data), the selected-item
-highlight, the SmashBrothers logo and the background panel. Draws accepted
-went from 7876 to 18808 and skips from 21179 to 9634 over the same 240 frames.
-This is the menu drawing, not a complete or navigable one: submenu transitions
-and keyboard navigation are still untested, and 9634 draws are still discarded.
+`build/menu-smoke.bmp` at menu frame 120 shows the real main menu -- the five
+items, the selected-item highlight, the SmashBrothers logo and the background
+panel. Accepted draws went 7876 -> 19480 over 240 frames and skips 21179 ->
+about 10000. This is the menu DRAWING, not a complete or navigable one:
+submenu transitions and keyboard navigation are untested.
 
-### How it was found
+### Method: rank the rejections, then fix in that order
 
-Rejection reasons were logged once each, which is enough to notice a gap but
-not to rank one -- a check discarding every draw on screen looked identical to
-one discarding a single stray draw. `pc_gx_material_report()` and
-`pc_gx_texture_report()` now tally accepted draws and each skipped draw by
-reason, and `pc/tests/menu_smoke.gdb` prints both. The first measurement said
-74% of menu draws were being discarded, and ranked the causes; every fix since
-has been picked off that ranking and verified against it.
+Rejection reasons were logged once each, which notices a gap but cannot rank
+one -- a check discarding every draw on screen looked identical to one
+discarding a single stray draw. `pc_gx_material_report()` and
+`pc_gx_texture_report()` now tally accepted draws and each skip by reason, and
+`pc/tests/menu_smoke.gdb` prints both at the end. Everything below was picked
+off that ranking and verified against it. Keep doing this rather than guessing.
 
-### Three fixes, in the order the tally chose them
+### What was fixed
 
-1. **Post-transform texture matrices** (was 20743 skips). Splitting a lumped
-   check and recording actual texgen configurations showed 17782 of one shape:
-   identity 2x4 generator, source TEX0, with the work in `GX_PTTEXMTX0`. That
-   is sysdolphin's ordinary textured material -- `setupTextureCoordGen`
-   (tobj.c:492) sets an identity generator and tobj.c:488 loads the texture's
-   whole scale/rotate/translate as the POST-transform matrix. Tracked through
-   a `GXLoadTexMtxImm` wrapper and applied to the vertex TEX0 in `emit_vertex`.
-   Exact rather than a shortcut, because the generator feeding it is identity.
-   Fell to 671. **On its own this changed nothing visible** -- those draws then
-   failed the checks behind it -- but nothing textured could be right without
-   it.
-2. **Depth attachment** (was 7033 skips). The framebuffer had none at all, so
-   every draw enabling a real depth comparison was discarded. `pc_vulkan.c`
-   now creates a D32_SFLOAT image with the swapchain, adds it to the render
-   pass and framebuffers, and clears it to the far plane.
-3. **General blend factors** (was 4280 skips). Only source-alpha/
-   inverse-source-alpha were mapped.
+1. **Post-transform texture matrices** (20743 skips -> 671). sysdolphin sets an
+   identity 2x4 texgen (`setupTextureCoordGen`, tobj.c:492) and loads the
+   texture's whole scale/rotate/translate as the POST-transform matrix
+   (tobj.c:488). Ignoring it discarded the UV transform of every ordinary
+   textured draw. Tracked via a `GXLoadTexMtxImm` wrapper, applied to the
+   vertex TEX0 in `emit_vertex` -- exact, because the generator feeding it is
+   identity. **On its own this changed nothing visible**; those draws then
+   failed the checks behind it.
+2. **Depth attachment** (7033 skips -> 0). The framebuffer had none at all.
+   `pc_vulkan.c` creates a D32_SFLOAT image with the swapchain, adds it to the
+   render pass and framebuffers, clears it to the far plane.
+3. **General blend factors** (4280 -> 0). Only source-alpha/inverse-source-alpha
+   were mapped.
+4. **Palettized textures** (92 CI4 + 92 CI8 loads -> 0). Decoded through the
+   TLUT a `GXLoadTlut` wrapper records; an index past the palette fails the
+   decode rather than inventing a colour.
 
-Both 2 and 3 are Vulkan pipeline and render-pass state, NOT shader code --
-worth stating because it was initially assumed they needed the shader
-regenerated, and they do not. They did need the fixed 32-pipeline enumeration
-replaced: eight source factors by eight destination factors by eight depth
-comparisons, on top of cull and write masks, is tens of thousands of
-combinations of which a frame uses a handful. `pc_gx_fifo.c` now builds
-pipelines on demand into a 64-entry cache keyed by the GX state, and reports
-loudly if that cache ever fills rather than silently drawing with the wrong
-one.
+2 and 3 are pipeline and render-pass state, NOT shader code. That is worth
+stating because it was assumed they needed the shader regenerated and they did
+not -- the assumption would have blocked both behind a toolchain they never
+required. They did need the fixed 32-pipeline enumeration replaced with a
+64-entry cache keyed by GX state, built on demand; a full cache reports and
+skips rather than silently drawing through the wrong pipeline.
 
-### What still gets discarded, measured
+### Current tally, and why the next step is NOT a vertex attribute
 
-    7360  raster channel other than COLOR0 or ZERO
-     859  texcoord index beyond enabled texgen count
-     704  non-identity texgen
-     586  more than four TEV stages
-     125  logic/subtract blending
-      92  CI4 and 92 CI8 texture loads
+    7280  raster channel other than COLOR0 or ZERO
+     863  texcoord index beyond enabled texgen count
+     667  non-identity texgen
+     578  more than four TEV stages
+     123  logic/subtract blending
 
-**Raster channel is now the whole remaining story at 7360.** `GXTev.c:376`'s
-`c2r[] = {0,1,0,1,0,1,7,5,6}` maps GXChannelID to the BP field, so the rejected
-value 1 is channel 1: `GX_COLOR1`/`GX_ALPHA1`/`GX_COLOR1A1`. It needs
-`GX_VA_CLR1` decoded into a second vertex colour attribute -- `pc_gx_fifo.c`
-currently reads and discards it to keep the stream aligned -- plus the channel
-control from `GXSetChanCtrl` to know whether the channel comes from the vertex
-or from lighting, plus a fragment shader change. That last part means
-regenerating SPIR-V (`pc/shaders/regenerate.ps1`, which needs a 64-bit glslc;
-no 32-bit shaderc exists). Budget for it before starting.
+Raster channel 1 is the whole remaining story. The obvious reading -- "channel
+1 is a second vertex colour, decode `GX_VA_CLR1`" -- was measured and is
+WRONG. Instrumenting the vertex descriptor at every rejection gave:
 
-CI4/CI8 are palettized textures and need TLUT support in `pc_gx_texture.c` and
-`pc_texture_decode.c`; a lot of UI art is paletted, so some of what renders now
-is likely missing its texture.
+    of those, channel 1 with a vertex CLR1: 0, without: 7280
+
+Not one of those draws supplies a second vertex colour. So channel 1 comes
+from the channel-control/lighting path. Instrumenting `GXSetChanCtrl` (channel
+ids are GXChannelID, colour sources GX_SRC_REG=0/GX_SRC_VTX=1) gave:
+
+    chan 1 lit=1 amb=0 mat=0 lights=12 diff=2 attn=0  x98
+    chan 5 lit=0 amb=0 mat=1 lights=0  diff=0 attn=2  x1
+    chan 1 mat rgba 0,0,0,0   amb rgba 0,0,0,0
+
+Channel 1 is configured with lighting ENABLED, a light mask, a diffuse
+function and attenuation, and its material and ambient registers are black.
+Only one call ever configures it unlit. So producing it needs real GX
+lighting -- `GXInitLightPos/Color/Attn`, `GXLoadLightObj`, the diffuse and
+attenuation functions, and per-vertex normals (`GX_VA_NRM`, currently skipped
+in `pc_gx_fifo.c`) -- plus a fragment shader change and SPIR-V regeneration.
+`glslc` exists at `C:/Users/Owner/msys64/mingw64/bin/glslc.exe`, and
+`pc/shaders/regenerate.ps1` already points at it, so the toolchain is not a
+blocker; the size of the feature is.
+
+Those counts are per GXSetChanCtrl CALL, not per draw, so they say which
+configurations exist, not how many draws use each. Before building lighting,
+consider tallying it per rejected draw -- it is cheap and may show that a large
+share of the 7280 use one simple configuration.
 
 `pc/tests/bmp_to_png.py` converts a capture for viewing. Captures stay under
 gitignored `build/` and are never committed.
