@@ -1,5 +1,174 @@
 # Handoff — September 10, 2026 checkpoint
 
+## Where this stands: the menus drive themselves into a VS match; the match itself does not run yet
+
+`pc/tests/match_smoke.gdb` now takes the game from boot to
+`gm_Scene_Vs_OnEnter` without a person touching anything, through the real
+menus: title -> main menu -> VS Mode -> Melee -> character select (a character
+chosen with the hand cursor, a CPU added on port 2) -> stage select -> match.
+Every one of those transitions happens because the game's own menu code acted
+on a PADStatus. No scene is skipped, no state is forced, nothing is faked.
+
+VERIFIED: the route reaches `gm_Scene_Vs_OnEnter` and the test reports how far
+it got (`css=1 sss=1 in_match=1`). NOT established: a match that runs a single
+frame. `match_frames` is still 0 -- the stops are now inside stage and fighter
+setup, one schema at a time, which is the same grind that produced the menu.
+
+## The route, and why it is worth having
+
+The attract loop wandered: six different endings across runs, so a fix could
+never be told from a different path. `pc/src/pc_input_script.c` replaces it
+with a fixed route, off unless `PC_INPUT_SCRIPT=vs` is set, so an ordinary run
+is untouched.
+
+Two things it needs and how it gets them:
+
+**A clock.** `gm_801A4D34` is called once per SCENE -- the frame loop is
+inside it -- so counting its calls held every button down forever and the
+opening movie never advanced. The clock is `HSD_PadRenewCopyStatus`, which
+`lb_80019900` calls under the same `lb_80019A30(0)` gate that gates the
+scene's `on_frame`, one for one. It is also the call that recomputes
+`HSD_PadCopyStatus::trigger`, so one tick is exactly one chance for a menu to
+see a button edge and exactly one cursor-think's worth of stick movement.
+`gm_801A4D34` still identifies the live scene, which is what it is good for.
+
+**Positions at character select.** That screen has no highlighted default:
+nothing happens until a hand cursor carries a token onto a portrait, and Start
+is ignored until two ports hold a character. The steering is open loop off two
+absolute references the screen provides. The cursor clamps to x in [-35, 26]
+and y in [-22, 25], so holding a direction parks it on a known edge whatever
+it was doing before; from there each frame of full deflection moves it
+`0.0002 * (80*80 - 200) = 1.24` units, from `getStickDelta`. Every move drives
+into a corner and counts frames out of it.
+
+The geometry was measured out of a running character select rather than read
+off the initialisers, because the icon table comes from the disc:
+
+    icon 13                     x -3.40 .. 3.60    y 6.00 .. 13.00   selectable
+    port 2 player-kind toggle   x -19.40 .. -13.40 y -4.60 .. 0.20
+
+The token a cursor carries sits at `cursor + (2.7, -2.0)` every frame
+(`fn_80262648`) and it is the token, not the cursor, that is hit-tested. So
+the hand parks at (-1.52, 10.24) and the token lands at (1.18, 8.24), the
+middle of icon 13. Port 2 needs no character chosen for it: its toggle cycles
+player kind, with no controller in the port the cycle lands on CPU, and
+`mncharsel.c` picks the CPU a character itself.
+
+There is a **one-frame pipeline lag** between the script changing the stick
+and `mnCharSel_CursorThink` seeing it, so each direction change gives one
+frame to the old direction. Every target above has at least two frames of
+margin on each side, which is why it lands anyway. Measured, not assumed:
+the trace prints the cursor and token each step.
+
+Stage select opens with the cursor on slot 30, the random stage.
+`mnStageSel_80259C28` takes A or Start on an ordinary stage but ONLY Start on
+slot 30 -- a run pressing A there produced the rejection sound and sat at
+stage select indefinitely, which is how this was found.
+
+### The stage is still random, and that is the next thing to fix about the test
+
+Slot 30 randomises, so each run tests a different stage and a fix cannot be
+told from a different stage. Two attempts to make it deterministic failed and
+are worth knowing about before a third:
+
+* Reading `mnStageSel_803F06D0[i].x0->mtx[..][3]` twenty frames into the scene
+  gave every icon x ~= 34..36, which cannot be right -- the cursor clamps to
+  x in [-27, 27]. Either the board is still animating in or those matrices
+  were stale.
+* Sweeping the cursor's local translate over the whole clamp range on a
+  3-unit grid and reading `mnStageSel_804D6CAE` back matched no icon at any
+  position. So the hit test's world coordinates are not the local ones the
+  clamp is applied to, and the parent transform has to be accounted for.
+
+`fn_8025A310` is the function to read: it clamps a LOCAL translate and then
+hit-tests the WORLD position `lb_8000B1CC` returns for it against each icon's
+world position. The cursor moves `0.03 * (stick - 30)` per frame, so 1.5 units
+per frame at full deflection, with the same corner-clamp trick available.
+
+## Current stops, in the order the route hits them
+
+Each of these is a byte-order schema, and each was found at a real line:
+
+1. **FIXED** `ftdata.c:1674`, "fighter figatree over! c8190000" -- 0x000019c8
+   reversed, the length field of a `Fighter_WaitAnimData`. See
+   `pc/src/pc_ft_data.c`.
+2. **FIXED** `mplib.c:4800` segfault, `groundCollJoint[joint_id]` with
+   `joint_id = 256` -- 1, byte-reversed, out of `UnkStageDat::unk8[map].unk20`.
+   See the map-entry block in `pc/src/pc_stage_data.c`.
+3. **OPEN, not reproduced since** `particle.c:207`,
+   "psInitDataBanks: unknown version", from `grDatFiles_801C6038` ->
+   `psInitDataBankLoad`. Seen once, on `St_Kind_Story`; two later runs on
+   other stages converted every bank correctly (a probe printed
+   `CONV`/`LOCATE`/`LOAD` with `ver=0042` throughout). Because the stage is
+   random this may simply not have come round again. Suspect a path that
+   reaches `psInitDataBankLoad` with banks `HSD_ArchiveGetPublicAddress` never
+   handed out.
+4. **FIXED** `ftparts.c:681` segfault, `fp->parts[i].flags8 = 0` past the end
+   of a `MAX_FT_PARTS` allocation, because `ftPartsTable[kind]->parts_num`
+   came out of PlCo.dat byte-reversed.
+5. **FIXED** `ftparts.c:722` segfault in `ftParts_8007506C`, scanning past the
+   end of `Fighter_804D6540[kind]->x0` because its count `x4` came out of
+   PlCo.dat byte-reversed. The tell was `part=256`: the scan found spurious
+   matches in zeroed memory for every part number below that.
+
+## Fighter data: what is converted and what is not
+
+`pc/src/pc_ft_data.c` hooks `ftData_8008572C` rather than
+`HSD_ArchiveGetPublicAddress`, where the stage schemas hook. The symbol name
+there would identify the character, but neither move table's length is in the
+archive at all: they are compiled into `ftData_Table_Unk0` and
+`ftData_UnkIntPairs`, indexed by `FighterKind`. `ftData_8008572C` is handed
+that kind, is only called from other translation units so `--wrap` takes, and
+is the one function that fills `gFtDataList`.
+
+Converted so far: the common attribute block (`ftCo_DatAttrs` is four-byte
+floats and ints from +0x000 to +0x17C, then one byte), and both
+`Fighter_WaitAnimData` tables. **Everything else in `ftData` is still
+big-endian** -- `ext_attr`, the hurtbox table at +0x30, the dynamics at +0x2C,
+the SFX table at +0x4C, and the rest. Expect them in that order as the match
+gets further, and expect `ext_attr` to be a separate schema per character.
+
+### PlCo.dat, the tables every fighter shares
+
+`Fighter_LoadCommonData` pulls 23 pointers out of one public symbol,
+`ftLoadCommonData`, so the conversion hangs off the same
+`HSD_ArchiveGetPublicAddress` wrapper the stage schemas use.
+
+Converted: `pData[0]` `ftCommonData` (four-byte members except
+`x6DC_colorsByPlayer` and the four bytes after it), `pData[4]` `ftPartsTable`
+(one `parts_num` per kind), `pData[5]` `Fighter_804D6540` (one count per
+kind). **The other twenty are untouched** and will surface the same way.
+`ftCommonData` is the one worth noticing: it is the deadzones, thresholds and
+knockback constants, so a reversed copy never faults -- it just makes a match
+that behaves like nothing.
+
+## The adjacent-globals hazard: now five instances
+
+The console linker packed separate globals contiguously and MWCC reached one
+through another. GCC aligns each independently, so that arithmetic lands on
+unrelated memory. Found so far: `card_host_storage.h`, THPInit's
+`__THPLCWork672`, `CSSAllStorage` in `mncharsel.c`, and now two in
+`ft_800852B0`:
+
+    (ftData_UnkCountStruct*) &CostumeListsForeachCharacter[FTKIND_MAX]
+    (ftData_UnkCountStruct*) ((u8*) CostumeListsForeachCharacter + 5940)
+    (ft_8045993C_t*) &gFtDataList[FTKIND_MAX]
+
+`config/GALE01/symbols.txt` says what those really are:
+`CostumeListsForeachCharacter` is 0x803C0EC0 size 0x108 with
+`ftData_Table_Unk0` at 0x803C0FC8 and `ftData_UnkIntPairs` at 0x803C25F4 --
+base + 0x108 and base + 5940 exactly -- and `gFtDataList` is 0x804598B8 size
+0x84 with `ft_8045993C` at 0x8045993C. Those three writes were zeroing 0x30
+and 0x210 bytes of whatever GCC placed there, on every boot, since long before
+this session. The objects are now named and the arithmetic kept under
+`MUST_MATCH`.
+
+**When a new stop makes no sense, check this first.** The tell is a decomp
+expression that indexes past the end of one global, or adds a magic byte
+offset to one. `config/GALE01/symbols.txt` settles it in one grep.
+
+## Previous September 10 checkpoint: the menu renders and navigates
+
 ## Where this stands: the menu renders and navigates; a match does not run yet
 
 The main menu draws with its animated background -- the five items and the

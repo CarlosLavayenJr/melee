@@ -222,6 +222,43 @@ void pc_stage_head_to_native(UnkStageDat* d)
         }
     }
 
+    /* unk8 is an array of UnkStageDat_x8_t, one per map id, counted by unkC.
+       Its pointers are relocation-named, but three things behind them are
+       not: the joint table Ground_801C2ED0 walks (unk20/unk24), and the
+       s16 list ground.c:906 walks (x2C/x30). Missing the first is what sent
+       mpJointUpdateDynamics a joint id of 256 -- 1, byte-reversed -- and
+       segfaulted mplib.c:4800 indexing groundCollJoint with it. x28 is read
+       as u8 flags (granime.c:1038) and has no byte order to fix. */
+    if (d->unk8 != NULL && d->unkC != 0) {
+        check_array(d->unk8, d->unkC, sizeof d->unk8[0], "map entry count");
+        for (i = 0; i < d->unkC; i++) {
+            struct UnkStageDat_x8_t* e = &d->unk8[i];
+            if (!pc_hsd_claim(e, sizeof *e, PC_HSD_STAGEMAPENTRY)) {
+                continue;
+            }
+            swap_s32(&e->unk24);
+            swap_s32((s32*) &e->x30);
+            if (e->unk20 != NULL && e->unk24 != 0) {
+                s32 k;
+                check_array(e->unk20, e->unk24, sizeof e->unk20[0],
+                            "map entry joint count");
+                for (k = 0; k < e->unk24; k++) {
+                    swap_s16(&e->unk20[k].x);
+                    swap_s16(&e->unk20[k].y);
+                    swap_s16(&e->unk20[k].z);
+                }
+            }
+            if (e->x2C != NULL && e->x30 != 0) {
+                int k;
+                check_array(e->x2C, e->x30, sizeof e->x2C[0],
+                            "map entry index count");
+                for (k = 0; k < e->x30; k++) {
+                    swap_s16(&e->x2C[k]);
+                }
+            }
+        }
+    }
+
     if (d->unk28 == NULL || d->unk2C == 0) {
         return;
     }
@@ -351,6 +388,8 @@ void pc_stage_itemdata_to_native(struct GroundItemData** table)
    the symbol is handed out covers both branches; whichever runs second finds
    the work already claimed. */
 void pc_hsd_particle_banks_to_native(void* cmd, void* tex, void* form);
+/* pc_ft_data.c. */
+void pc_ft_common_data_to_native(void* p);
 
 void* __real_HSD_ArchiveGetPublicAddress(HSD_Archive* archive,
                                          const char* symbols);
@@ -372,6 +411,10 @@ void* __wrap_HSD_ArchiveGetPublicAddress(HSD_Archive* archive,
             pc_hsd_particle_banks_to_native(p, NULL, NULL);
         } else if (strcmp(symbols, "map_texg") == 0) {
             pc_hsd_particle_banks_to_native(NULL, p, NULL);
+        } else if (strcmp(symbols, "ftLoadCommonData") == 0) {
+            /* Not a stage, but this is the dispatch point: PlCo.dat's shared
+               fighter tables arrive through the same door. pc_ft_data.c. */
+            pc_ft_common_data_to_native(p);
         }
     }
     return p;

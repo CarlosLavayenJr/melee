@@ -35,6 +35,7 @@
 #include <stddef.h>
 #include <string.h>
 
+#include <melee/ft/fighter.h>
 #include <melee/ft/ftdata.h>
 #include <melee/ft/forward.h>
 #include <melee/ft/types.h>
@@ -133,6 +134,77 @@ static void moves_to_native(struct Fighter_WaitAnimData* a, int count,
         swap_s32(&a[i].x4);
         swap_s32(&a[i].x8);
         swap_s32(&a[i].x10_animCurrFlags);
+    }
+}
+
+/* PlCo.dat's "ftLoadCommonData" block: 23 relocated pointers to the tables
+   every fighter shares (Fighter_LoadCommonData copies them out one by one).
+   Three of them are converted here, and the other twenty are NOT -- they will
+   announce themselves the way these did, at a line that faults.
+
+   pData[4] is ftPartsTable, one FighterPartsTable per FighterKind, whose
+   parts_num bounds the loop in ftParts_80074E58. Byte-reversed it ran off
+   the end of fp->parts and segfaulted ftparts.c:681 the moment a fighter was
+   created.
+
+   pData[0] is ftCommonData, which would not have faulted at all: it is the
+   deadzones, thresholds and knockback constants every fighter reads, so a
+   reversed copy is a match that runs and behaves like nothing. Its members
+   are four bytes each except x6DC_colorsByPlayer (four GXColors) and the
+   four bytes after them, so the run stops and restarts around that gap. */
+void pc_ft_common_data_to_native(void* p)
+{
+    void** table = (void**) p;
+    struct ftCommonData* common;
+    struct FighterPartsTable** parts;
+    struct Fighter_804D6540_t** hidden;
+    int i;
+
+    if (table == NULL) {
+        return;
+    }
+    if (!pc_hsd_in_archive(table, 23 * sizeof *table)) {
+        pc_sys_log("pc_ft_data: PlCo.dat common data is not archive memory, "
+                   "so its byte order is unconverted\n");
+        return;
+    }
+
+    common = table[0];
+    if (common != NULL &&
+        pc_hsd_claim(common, sizeof *common, PC_HSD_FTCOMMON))
+    {
+        size_t gap = offsetof(struct ftCommonData, x6DC_colorsByPlayer);
+        size_t after = offsetof(struct ftCommonData, metal_armor);
+        swap_words(common, gap);
+        swap_words((unsigned char*) common + after, sizeof *common - after);
+    }
+
+    parts = table[4];
+    if (parts != NULL && pc_hsd_in_archive(parts, FTKIND_MAX * sizeof *parts))
+    {
+        for (i = 0; i < FTKIND_MAX; i++) {
+            struct FighterPartsTable* t = parts[i];
+            if (t != NULL && pc_hsd_claim(t, sizeof *t, PC_HSD_FTPARTS)) {
+                swap_s32((s32*) &t->parts_num);
+            }
+        }
+    }
+
+    /* pData[5] is Fighter_804D6540, one entry per FighterKind, each a pointer
+       to four-byte records and a count of them. Only the count is a word; the
+       records are four u8 fields. Byte-reversed, the count sent
+       ftParts_8007506C scanning memory for a match and it segfaulted at
+       ftparts.c:722 once no early match turned up -- at part 256, having found
+       spurious matches in zeroed memory for every smaller part number. */
+    hidden = table[5];
+    if (hidden != NULL && pc_hsd_in_archive(hidden, FTKIND_MAX * sizeof *hidden))
+    {
+        for (i = 0; i < FTKIND_MAX; i++) {
+            struct Fighter_804D6540_t* h = hidden[i];
+            if (h != NULL && pc_hsd_claim(h, sizeof *h, PC_HSD_FTHIDDENPARTS)) {
+                swap_s32((s32*) &h->x4);
+            }
+        }
     }
 }
 
