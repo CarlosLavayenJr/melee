@@ -205,6 +205,47 @@ static void swap_cmd_bank(void* cmd)
                 log_uint(*(u16*) cmd);
                 pc_sys_log("\n");
             }
+        } else if (pc_hsd_kind_at(cmd) == PC_HSD_PSCMDBANK) {
+            /* This port converted this bank already and is being handed it
+               again -- which is normal, and normally means the version word
+               reads 0 or 0x40..0x43 by now. When it does not, the bytes have
+               changed since: something wrote over them without the DVD path
+               marking the range as a fresh archive body, so the claim still
+               says "converted" while the contents say otherwise.
+               psInitDataBankLoad then panics on the version. That is the open
+               "psInitDataBanks: unknown version" stop; say so here, where the
+               address and the value are both still in hand. */
+            u16 v = *(u16*) cmd;
+            if (v != 0 && (v < 0x40 || v > 0x43)) {
+                static int warned3;
+                if (!warned3) {
+                    warned3 = 1;
+                    pc_sys_log("pc_hsd_particle: command bank at ");
+                    log_uint((u32) (uintptr_t) cmd);
+                    pc_sys_log(" is marked converted but its version now reads ");
+                    log_uint(v);
+                    pc_sys_log("; its bytes changed without the range being "
+                               "re-marked\n");
+                }
+            }
+        } else {
+            /* Archive memory, but some other schema got here first -- which
+               means this bank's version word has already been rewritten by a
+               converter that thought it was something else, and
+               psInitDataBankLoad will panic on it. Name that schema; the same
+               shape shows up on stage param row 0 (see pc_stage_data.c) and
+               the two are probably one bug. */
+            static int warned2;
+            if (!warned2) {
+                warned2 = 1;
+                pc_sys_log("pc_hsd_particle: command bank at ");
+                log_uint((u32) (uintptr_t) cmd);
+                pc_sys_log(" was already claimed by schema ");
+                log_uint(pc_hsd_kind_at(cmd));
+                pc_sys_log("; version reads ");
+                log_uint(*(u16*) cmd);
+                pc_sys_log("\n");
+            }
         }
         return;
     }

@@ -95,14 +95,27 @@ Each of these is a byte-order schema, and each was found at a real line:
 2. **FIXED** `mplib.c:4800` segfault, `groundCollJoint[joint_id]` with
    `joint_id = 256` -- 1, byte-reversed, out of `UnkStageDat::unk8[map].unk20`.
    See the map-entry block in `pc/src/pc_stage_data.c`.
-3. **OPEN, not reproduced since** `particle.c:207`,
-   "psInitDataBanks: unknown version", from `grDatFiles_801C6038` ->
-   `psInitDataBankLoad`. Seen once, on `St_Kind_Story`; two later runs on
-   other stages converted every bank correctly (a probe printed
-   `CONV`/`LOCATE`/`LOAD` with `ver=0042` throughout). Because the stage is
-   random this may simply not have come round again. Suspect a path that
-   reaches `psInitDataBankLoad` with banks `HSD_ArchiveGetPublicAddress` never
-   handed out.
+3. **OPEN, and recurring** `particle.c:207`, "psInitDataBanks: unknown
+   version", from `grDatFiles_801C6038` -> `psInitDataBankLoad`. Seen on Story,
+   Great Bay and Brinstar; other stages convert every bank correctly (a probe
+   printed `CONV`/`LOCATE`/`LOAD` with `ver=0042` throughout).
+
+   What the diagnostics have ruled out: the bank IS archive memory, and
+   `swap_cmd_bank` neither reported a version it did not recognise nor
+   reported missing provenance. What is left is the silent path -- the bank is
+   already marked `PC_HSD_PSCMDBANK`, so this port converted it once, and yet
+   the version word now reads something else. That means its bytes changed
+   after conversion without the DVD path re-marking the range as a fresh
+   archive body, so the claim still says "converted" while the contents say
+   otherwise. `swap_cmd_bank` now says exactly that when it happens.
+
+   **This is very likely the same bug as the stage-param stop below**: both
+   are a word in an archive that was correct and then was not, with the claim
+   bookkeeping out of step with the memory. Fixing the provenance tracking may
+   fix both at once. The place to look is every path that fills or moves an
+   archive body without going through the DVD read that calls
+   `pc_hsd_archive_body` -- the preload cache in `lbdvd.c` is the obvious
+   suspect.
 4. **FIXED** `ftparts.c:681` segfault, `fp->parts[i].flags8 = 0` past the end
    of a `MAX_FT_PARTS` allocation, because `ftPartsTable[kind]->parts_num`
    came out of PlCo.dat byte-reversed.
@@ -148,17 +161,26 @@ archive memory, and `swap_stage_param` has no per-row claim -- so nothing in
 this port converts row 0 twice on purpose. Something else wrote that one word
 first.
 
-The best remaining hypothesis, untested: `pc_stage_head_to_native` ends by
-calling `pc_hsd_mobj_flags_to_native(&e->unk4)` for each `map_head` entry,
-which swaps **exactly one u32**, at `entry + 4`. If any `unk28[i]` happens to
-equal `((u8*) stage_params) - 4`, that swap lands precisely on
-`stage_params[0].stkind`. The test is to print every `unk28[i]` and the
-`stage_params` address on a failing stage and compare; a probe for that was
-running when this checkpoint was written.
+**Ruled out.** `pc_ground_param_to_native` now reports the schema mark on
+`&stage_params[0]` whenever it is not "unclaimed", and on a failing Venom run
+it said nothing -- so the word was archive memory that **no schema in this
+port had touched**, and it was already host order. That kills the leading
+hypothesis, which was that `pc_stage_head_to_native`'s
+`pc_hsd_mobj_flags_to_native(&e->unk4)` (the one converter that writes exactly
+one u32) had landed on it because some `unk28[i]` equalled
+`((u8*) stage_params) - 4`. It had not.
 
-If that is it, the fix is not to loosen the mobj-flags swap but to find out
-why an `unk28` entry points there -- either the count `unk2C` is wrong or the
-entries are not all MObj-shaped.
+So the word arrived host order from the DVD path itself. That points at
+`pc_dvd.c`'s archive conversion -- the container header and the relocation
+table -- rather than at any schema above it: if a relocation entry names an
+offset that is not actually a pointer field, that word gets converted on the
+way in and nothing above ever knows. **That is where to look next**, and it is
+testable directly: dump the archive's relocation offsets for a failing stage
+and check whether one of them equals `stage_params - archive_base`.
+
+Note also that the same shape explains stop 3 above (a particle command bank
+that this port marked converted and whose version word later read wrong), so
+one cause may account for both.
 
 ### Character attribute blocks (`ftData::ext_attr`)
 
