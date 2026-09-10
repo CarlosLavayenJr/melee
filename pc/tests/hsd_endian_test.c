@@ -9,6 +9,7 @@
 #include <sysdolphin/baselib/wobj.h>
 #include <sysdolphin/baselib/mobj.h>
 #include <sysdolphin/baselib/tobj.h>
+#include <sysdolphin/baselib/lobj.h>
 
 void pc_sys_log(const char* s) { fputs(s, stderr); }
 int __real_HSD_ArchiveParse(void* a, void* s, size_t n)
@@ -27,6 +28,122 @@ HSD_TObj* __real_HSD_TObjLoadDesc(HSD_TObjDesc* d) { return (HSD_TObj*)d; }
 HSD_TObj* __wrap_HSD_TObjLoadDesc(HSD_TObjDesc* d);
 void __real_HSD_WObjInit(HSD_WObj* w, HSD_WObjDesc* d) { (void)w; (void)d; }
 void __wrap_HSD_WObjInit(HSD_WObj* w, HSD_WObjDesc* d);
+HSD_WObj* __real_HSD_WObjLoadDesc(HSD_WObjDesc* d) { return (HSD_WObj*)d; }
+HSD_WObj* __wrap_HSD_WObjLoadDesc(HSD_WObjDesc* d);
+HSD_LObj* __real_HSD_LObjLoadDesc(HSD_LightDesc* d) { return (HSD_LObj*)d; }
+HSD_LObj* __wrap_HSD_LObjLoadDesc(HSD_LightDesc* d);
+void __real_HSD_TObjAddAnim(HSD_TObj* t, HSD_TexAnim* a) { (void)t; (void)a; }
+void __real_HSD_TObjAddAnimAll(HSD_TObj* t, HSD_TexAnim* a) { (void)t; (void)a; }
+void __wrap_HSD_TObjAddAnim(HSD_TObj* t, HSD_TexAnim* a);
+void __wrap_HSD_TObjAddAnimAll(HSD_TObj* t, HSD_TexAnim* a);
+
+static void be_float(float* p, float value)
+{
+    unsigned word;
+    memcpy(&word, &value, 4);
+    word = (word >> 24) | ((word >> 8) & 0xff00u) |
+           ((word << 8) & 0xff0000u) | (word << 24);
+    memcpy(p, &word, 4);
+}
+
+static void test_lights(unsigned char* block)
+{
+    HSD_LightDesc* lights = (void*)block;
+    HSD_LightPointDesc* point = (void*)(block + 512);
+    HSD_LightSpotDesc* spot = (void*)(block + 544);
+    HSD_LightAttn* raw = (void*)(block + 576);
+    HSD_WObjDesc* position = (void*)(block + 640);
+    HSD_WObjDesc* interest = (void*)(block + 704);
+    HSD_LightDesc native = {0};
+    unsigned char before[768];
+    memset(block, 0, 4096);
+    pc_hsd_archive_body(block, 4096);
+    for (int i = 0; i < 7; ++i) {
+        if (i < 6) lights[i].next = &lights[i+1];
+        lights[i].color = (GXColor){1, 64, 179, 255};
+        lights[i].position = position;
+    }
+    lights[0].flags = lights[1].flags = 0x0e00;
+    lights[0].u.point = lights[1].u.point = point;
+    lights[2].flags = 0x0f00; lights[2].u.spot = spot;
+    lights[2].interest = interest;
+    lights[3].flags = 0x0e00; lights[3].attnflags = 0x0100;
+    lights[3].u.attn = raw;
+    lights[4].flags = 0x0f00; lights[4].attnflags = 0x0200;
+    lights[4].u.attn = raw; lights[4].interest = interest;
+    lights[5].flags = 0x0d00; /* infinite, union unused */
+    lights[6].flags = 0x2400; /* ambient */
+    be_float(&point->ref_br, 0.5f); be_float(&point->ref_dist, 100.0f);
+    point->dist_func = 0x02000000;
+    be_float(&spot->cutoff, 45.0f); spot->spot_func = 0x03000000;
+    be_float(&spot->ref_br, 0.25f); be_float(&spot->ref_dist, 50.0f);
+    spot->dist_func = 0x01000000;
+    be_float(&raw->a0, 1); be_float(&raw->a1, 2); be_float(&raw->a2, 3);
+    be_float(&raw->k0, 4); be_float(&raw->k1, 5); be_float(&raw->k2, 6);
+    be_float(&position->pos.x, 10); be_float(&position->pos.y, -20);
+    be_float(&position->pos.z, 30); be_float(&interest->pos.z, -1);
+    __wrap_HSD_LObjLoadDesc(lights);
+    assert(lights[0].flags == 0x0e && lights[6].flags == 0x24);
+    assert(lights[0].next == &lights[1] && lights[0].position == position);
+    assert(lights[0].color.r == 1 && lights[0].color.b == 179);
+    assert(lights[3].attnflags == 1 && lights[4].attnflags == 2);
+    assert(point->ref_br == 0.5f && point->ref_dist == 100 && point->dist_func == 2);
+    assert(spot->cutoff == 45 && spot->spot_func == 3 && spot->ref_br == 0.25f);
+    assert(spot->ref_dist == 50 && spot->dist_func == 1);
+    assert(raw->a0 == 1 && raw->a1 == 2 && raw->a2 == 3);
+    assert(raw->k0 == 4 && raw->k1 == 5 && raw->k2 == 6);
+    assert(position->pos.x == 10 && position->pos.y == -20 && position->pos.z == 30);
+    assert(interest->pos.z == -1);
+    memcpy(before, block, sizeof before);
+    __wrap_HSD_LObjLoadDesc(lights);
+    __wrap_HSD_WObjInit(NULL, position);
+    __wrap_HSD_WObjLoadDesc(position);
+    assert(memcmp(before, block, sizeof before) == 0);
+    native.flags = 0x0e; native.u.point = point; native.position = position;
+    __wrap_HSD_LObjLoadDesc(&native);
+    assert(native.flags == 0x0e && point->ref_dist == 100);
+    assert(__wrap_HSD_LObjLoadDesc(NULL) == NULL);
+    pc_hsd_forget_range(block, 4096);
+    puts("PASS: light types, shared attenuation and WObj positions convert once; native data untouched");
+}
+
+static void test_texanim(unsigned char* block)
+{
+    HSD_TexAnim* anim = (void*)block;
+    HSD_ImageDesc** images = (void*)(block+128);
+    HSD_TlutDesc** tluts = (void*)(block+144);
+    HSD_ImageDesc* image = (void*)(block+192);
+    HSD_TlutDesc* tlut = (void*)(block+224);
+    HSD_TexAnim native = {0};
+    unsigned char before[256];
+    memset(block, 0, 4096);
+    pc_hsd_archive_body(block, 4096);
+    anim->next = &anim[1]; anim->id = 0x03000000;
+    anim->imagetbl = images; anim->tluttbl = tluts;
+    anim->n_imagetbl = anim->n_tluttbl = 0x0200;
+    anim[1].id = 0x04000000; anim[1].imagetbl = images;
+    anim[1].n_imagetbl = 0x0200;
+    images[0] = images[1] = image; tluts[0] = tluts[1] = tlut;
+    image->image_ptr = block+512; image->width = 0x4000; image->height = 0x3000;
+    image->format = 0x02000000; be_float(&image->maxLOD, 2);
+    tlut->lut = block+1024; tlut->fmt = 0x02000000; tlut->n_entries = 0x0001;
+    __wrap_HSD_TObjAddAnimAll(NULL, anim);
+    assert(anim->id == GX_TEXMAP3 && anim[1].id == GX_TEXMAP4);
+    assert(anim->n_imagetbl == 2 && anim->n_tluttbl == 2);
+    assert(image->width == 64 && image->height == 48 && image->format == GX_TF_IA4);
+    assert(image->maxLOD == 2 && image->image_ptr == block+512);
+    assert(tlut->fmt == GX_TL_RGB5A3 && tlut->n_entries == 256 && tlut->lut == block+1024);
+    memcpy(before, block, sizeof before);
+    __wrap_HSD_TObjAddAnim(NULL, anim);
+    __wrap_HSD_TObjAddAnimAll(NULL, anim);
+    assert(memcmp(before, block, sizeof before) == 0);
+    native.id = GX_TEXMAP2;
+    __wrap_HSD_TObjAddAnim(NULL, &native);
+    assert(native.id == GX_TEXMAP2);
+    __wrap_HSD_TObjAddAnim(NULL, NULL);
+    pc_hsd_forget_range(block, 4096);
+    puts("PASS: animation image/TLUT counts, shared descriptors and texmap ids convert once");
+}
 
 int main(void)
 {
@@ -39,6 +156,8 @@ int main(void)
     HSD_PObjDesc native = {0};
     unsigned weight = 0x0000803f;
     assert(block == (void*)0x81000000u);
+    test_lights(block+4096);
+    test_texanim(block+8192);
     p = (void*)block; next = (void*)(block+64); v = (void*)(block+128);
     list = (void*)(block+256); env = (void*)(block+320);
     p->next = next; p->verts = next->verts = v;

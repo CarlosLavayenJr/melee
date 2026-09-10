@@ -1,6 +1,74 @@
-# Handoff — September 9, 2026 checkpoint
+# Handoff — September 10, 2026 checkpoint
 
-## Latest checkpoint: stage fixes; main menu entry crashes in light selection
+## Latest checkpoint: main menu runs for 240 frames; rendering incomplete
+
+This section supersedes all checkpoints below. Opening-movie playback was
+already working; this session fixes the normal Start-to-menu path after it.
+No movie decoder or GX renderer runtime implementation changed in this session.
+
+### Three diagnosed and fixed failures
+
+1. Menu light descriptors were still big-endian. The ambient light arrived as
+   flags `0x2400`, and both point lights as `0x0e00`, so `HSD_LObjLoadDesc`
+   classified all three as ambient. The menu's point-light search then walked
+   off the list at `mnmain.c:1789`. Added provenance-checked conversion for
+   light flags, attenuation descriptors, and WObj positions. Also wrapped
+   `HSD_WObjLoadDesc`: it calls the class load method directly, bypassing the
+   existing WObjInit wrapper. Runtime now has flags `0x24/0x0e/0x0e`, valid
+   point-light positions and attenuation, and passes this lookup.
+2. Once light loading worked, `mn_8022BE34_OnEnter` overwrote its saved stack
+   frame/return address. Its console-specific expression writes a Vec3 20
+   bytes beyond the local Vec3; GCC returned to address zero, with camera Z
+   (`0x424c0000`, 51.0) visible on the corrupted stack. The native-only branch
+   now passes `&pos`; the console build retains the original expression.
+3. Menu initialization then completed, but drawing asserted at `tobj.c:1246`
+   within a few frames. Texture animation selected an unconverted image:
+   width `0x4000`, height `0x3000`, format `0x02000000` (actually 64x48 IA4).
+   Added texture-animation id/count conversion and image/TLUT table traversal
+   through the existing shared-descriptor converters. Both TObjAddAnim and
+   TObjAddAnimAll are wrapped because the same-TU call bypasses linker wrapping.
+   Pointer tables and image/palette payload bytes stay untouched. Invalid
+   archive table extents still abort loudly; provenance rules are not relaxed.
+
+### Verification and honest visual status
+
+- `pc/tests/run_renderer_tests.ps1 -Gpu`: all eight CPU executables and the
+  Vulkan TEV GPU readback test pass. New regression cases cover light types,
+  shared attenuation/positions, texture-animation chains and shared image/TLUT
+  descriptors, repeat conversion, and native descriptors remaining unchanged.
+- Native 32-bit incremental compilation of `pc_hsd_swap.c` and `mnmain.c`,
+  followed by relinking with the new wrappers, passed. No clean full rebuild
+  was performed in this session. Full build invocation remains below.
+- New repeatable integration test, run from the repository root:
+  `gdb -batch -x pc/tests/menu_smoke.gdb build/phase2/melee_host.exe`.
+  It deliberately skips the intro and pulses Start through PADRead, with no
+  scene override. It reached `mnMain_Scene_OnFrame`, `cur_menu=0`,
+  `hovered_selection=0`, and stopped successfully after 240 menu frames.
+  The debugger then intentionally terminates its test process.
+- Inspected ignored `build/menu-smoke.bmp`, captured after menu frame 120:
+  "Solo Smash!" is visible near the bottom, but the rest is black. This proves
+  menu code runs and some text draws, NOT a complete or playable menu.
+- Existing diagnostics still reject missing depth attachments, non-identity
+  texgen/texture order, unsupported palette/depth/copy formats, more than four
+  TEV stages, and unsupported blend modes/factors. Do not silence these or
+  replace missing visuals with mocks. Logs/captures/binaries remain ignored.
+- Full movie completion, interactive submenu navigation, and gameplay were
+  not retested this session. Earlier frame-1000 movie evidence is historical.
+
+### Next work
+
+Prioritize the mostly missing menu rendering: inspect rejected menu draw state
+and identify which unsupported GX feature blocks its actual panel/background
+geometry. Use the repeatable menu test/capture to compare real rendering.
+Also test normal keyboard navigation and submenu transitions before claiming
+the menu is usable. Enter is Start (required at the title); J is A, K is B,
+WASD is the analog stick. Announce deliberate movie skips and test stops before
+launching visible tests so they are not mistaken for playback regressions.
+The separate randomized attract-mode stage stops below have not been rerun
+with these changes; texture-animation conversion may affect the Stadium stop,
+but that has not been verified.
+
+## Historical September 9 checkpoint: stage fixes; main menu light crash
 
 This section supersedes the historical checkpoints below. Full opening-movie
 playback was already working before this session; no movie decoder or renderer

@@ -33,6 +33,7 @@
 #include <sysdolphin/baselib/tobj.h>
 #include <sysdolphin/baselib/pobj.h>
 #include <sysdolphin/baselib/jobj.h>
+#include <sysdolphin/baselib/lobj.h>
 #include <sysdolphin/baselib/wobj.h>
 
 static unsigned short swap16(unsigned short v)
@@ -198,11 +199,73 @@ HSD_JObj* __wrap_HSD_JObjLoadJoint(HSD_Joint* joint)
     return __real_HSD_JObjLoadJoint(joint);
 }
 
+static void swap_wobj_desc(HSD_WObjDesc* desc)
+{
+    if (desc && pc_hsd_claim(desc, sizeof *desc, PC_HSD_WOBJ)) swap_vec(&desc->pos);
+}
+
 void __real_HSD_WObjInit(HSD_WObj* wobj, HSD_WObjDesc* desc);
 void __wrap_HSD_WObjInit(HSD_WObj* wobj, HSD_WObjDesc* desc)
 {
-    if (desc && pc_hsd_claim(desc, sizeof *desc, PC_HSD_WOBJ)) swap_vec(&desc->pos);
+    swap_wobj_desc(desc);
     __real_HSD_WObjInit(wobj, desc);
+}
+
+HSD_WObj* __real_HSD_WObjLoadDesc(HSD_WObjDesc* desc);
+HSD_WObj* __wrap_HSD_WObjLoadDesc(HSD_WObjDesc* desc)
+{
+    /* Load uses the class method directly, not HSD_WObjInit. */
+    swap_wobj_desc(desc);
+    return __real_HSD_WObjLoadDesc(desc);
+}
+
+static void swap_light_desc(HSD_LightDesc* desc)
+{
+    for (; desc && pc_hsd_claim(desc, sizeof *desc, PC_HSD_LIGHT); desc = desc->next) {
+        unsigned type;
+        desc->flags = swap16(desc->flags);
+        desc->attnflags = swap16(desc->attnflags);
+        type = desc->flags & LOBJ_TYPE_MASK;
+        /* GXColor and relocated pointers have no scalar byte-order work. */
+        if (type != LOBJ_AMBIENT) swap_wobj_desc(desc->position);
+        if (type == LOBJ_SPOT) swap_wobj_desc(desc->interest);
+        if (type != LOBJ_POINT && type != LOBJ_SPOT) continue;
+        if (!desc->u.p) {
+            pc_sys_log("pc_hsd_swap: point/spot light has no attenuation descriptor\n");
+            abort();
+        }
+        /* Mirror LObjLoad's selection: point tests a bit, spot tests nonzero. */
+        if ((type == LOBJ_POINT && (desc->attnflags & LOBJ_LIGHT_ATTN)) ||
+            (type == LOBJ_SPOT && desc->attnflags != 0)) {
+            HSD_LightAttn* a = desc->u.attn;
+            if (pc_hsd_claim(a, sizeof *a, PC_HSD_LIGHT_ATTN)) {
+                swap_f32(&a->a0); swap_f32(&a->a1); swap_f32(&a->a2);
+                swap_f32(&a->k0); swap_f32(&a->k1); swap_f32(&a->k2);
+            }
+        } else if (type == LOBJ_POINT) {
+            HSD_LightPointDesc* p = desc->u.point;
+            if (pc_hsd_claim(p, sizeof *p, PC_HSD_LIGHT_POINT)) {
+                swap_f32(&p->ref_br); swap_f32(&p->ref_dist);
+                p->dist_func = swap32(p->dist_func);
+            }
+        } else {
+            HSD_LightSpotDesc* s = desc->u.spot;
+            if (pc_hsd_claim(s, sizeof *s, PC_HSD_LIGHT_SPOT)) {
+                swap_f32(&s->cutoff); s->spot_func = swap32(s->spot_func);
+                swap_f32(&s->ref_br); swap_f32(&s->ref_dist);
+                s->dist_func = swap32(s->dist_func);
+            }
+        }
+    }
+}
+
+HSD_LObj* __real_HSD_LObjLoadDesc(HSD_LightDesc* desc);
+HSD_LObj* __wrap_HSD_LObjLoadDesc(HSD_LightDesc* desc)
+{
+    /* Menu point lights arrived as 0x0e00: LObjLoad classified them as ambient,
+       leaving the menu's point-light lookup to walk beyond the final node. */
+    swap_light_desc(desc);
+    return __real_HSD_LObjLoadDesc(desc);
 }
 
 /* --- materials and textures ---------------------------------------------
@@ -237,6 +300,43 @@ static void swap_tlut_desc(HSD_TlutDesc* t)
     t->fmt = (GXTlutFmt) swap32((unsigned) t->fmt);
     t->tlut_name = swap32(t->tlut_name);
     t->n_entries = swap16(t->n_entries);
+}
+
+static void swap_texanim(HSD_TexAnim* anim)
+{
+    for (; anim && pc_hsd_claim(anim, sizeof *anim, PC_HSD_TEXANIM); anim = anim->next) {
+        unsigned i;
+        anim->id = (GXTexMapID) swap32((unsigned)anim->id);
+        anim->n_imagetbl = swap16(anim->n_imagetbl);
+        anim->n_tluttbl = swap16(anim->n_tluttbl);
+        if ((unsigned)anim->id > GX_TEXMAP7 ||
+            (anim->n_imagetbl && !pc_hsd_in_archive(anim->imagetbl,
+                (size_t)anim->n_imagetbl * sizeof *anim->imagetbl)) ||
+            (anim->n_tluttbl && !pc_hsd_in_archive(anim->tluttbl,
+                (size_t)anim->n_tluttbl * sizeof *anim->tluttbl))) {
+            pc_sys_log("pc_hsd_swap: invalid texture-animation id or table extent\n");
+            abort();
+        }
+        /* Pointer tables are already relocated. Convert their descriptors before
+           the animation selects them, even when the initial texture was valid. */
+        for (i = 0; i < anim->n_imagetbl; ++i) swap_image_desc(anim->imagetbl[i]);
+        for (i = 0; i < anim->n_tluttbl; ++i) swap_tlut_desc(anim->tluttbl[i]);
+    }
+}
+
+void __real_HSD_TObjAddAnim(HSD_TObj* tobj, HSD_TexAnim* anim);
+void __wrap_HSD_TObjAddAnim(HSD_TObj* tobj, HSD_TexAnim* anim)
+{
+    swap_texanim(anim);
+    __real_HSD_TObjAddAnim(tobj, anim);
+}
+
+void __real_HSD_TObjAddAnimAll(HSD_TObj* tobj, HSD_TexAnim* anim);
+void __wrap_HSD_TObjAddAnimAll(HSD_TObj* tobj, HSD_TexAnim* anim)
+{
+    /* All calls AddAnim inside tobj.c, where linker wrapping does not intercept. */
+    swap_texanim(anim);
+    __real_HSD_TObjAddAnimAll(tobj, anim);
 }
 
 static void swap_lod_desc(HSD_TexLODDesc* l)
