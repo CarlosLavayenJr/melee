@@ -33,6 +33,12 @@ newly seen and undiagnosed:
   wrapper never runs for it. The banks the stage path uses come through the
   public-symbol hook instead, but an effect DAT loaded into the heap has
   neither.
+- **`mplib.c:4825`**, `HSD_ASSERT(4884, 0)` in `mpJointUpdateDynamics` with
+  `joint_id=4`. That branch is reached only when a collision line has
+  `dx == 0` and `dy == 0` -- a zero-length line, which the classifier has no
+  direction to categorise. Seen once, on a moving joint, so the first thing
+  to check is whatever moves that joint rather than the stage's own vertex
+  table, which is converted.
 
 The stops in front of 400 frames:
 
