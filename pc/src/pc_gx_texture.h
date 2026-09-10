@@ -19,6 +19,13 @@ int pc_gx_texture_load_obj_source(const void* obj, unsigned slot,
 /* Lower-level entry for synthetic tests and future texture producers.
    Mips are consecutively stored complete GX tiles, even for 1x1 levels.
    Sampler configuration must have pNext=NULL and anisotropy disabled. */
+/* As below, with a palette for the CI formats. */
+int pc_gx_texture_load_tlut(unsigned slot, unsigned format, unsigned width,
+                            unsigned height, unsigned levels,
+                            const void* source, size_t source_size,
+                            const void* tlut, unsigned tlut_entries,
+                            unsigned tlut_format,
+                            const VkSamplerCreateInfo* sampler);
 int pc_gx_texture_load(unsigned slot, unsigned format, unsigned width,
                        unsigned height, unsigned levels, const void* source,
                        size_t source_size, const VkSamplerCreateInfo* sampler);

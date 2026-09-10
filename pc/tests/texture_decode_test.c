@@ -98,18 +98,85 @@ static void test_invalid(void)
     assert(!pc_texture_source_size(0, 0, 1));
     assert(!pc_texture_source_size(0, 1, 1025));
     assert(!pc_texture_source_size(0, ~0u, ~0u));
-    assert(!pc_texture_source_size(8, 1, 1));
+    assert(!pc_texture_source_size(7, 1, 1));  /* unassigned */
+    assert(!pc_texture_source_size(11, 1, 1)); /* unassigned */
+    assert(pc_texture_source_size(PC_TF_CI8, 8, 4) == 32);
     assert(pc_texture_source_size(6, 1, 1) == 64);
     assert(pc_texture_decode(6, 1, 1, src, 63, out, sizeof out) == -1);
     assert(pc_texture_decode(6, 1, 1, src, 64, out, 3) == -1);
-    assert(pc_texture_decode(8, 1, 1, src, 64, out, sizeof out) == -1);
+    assert(pc_texture_decode(7, 1, 1, src, 64, out, sizeof out) == -1);
     assert(pc_texture_decode(6, 1, 1, NULL, 64, out, sizeof out) == -1);
     assert(!memcmp(out, before, sizeof out));
 }
 
+static void test_paletted(void)
+{
+    /* CI8: 8x4 tile, one byte per texel, indices into a 16-bit palette.
+       Checked against colours worked out by hand from the TLUT formats. */
+    unsigned char src[32] = {0}, out[8 * 4 * 4];
+    unsigned char tlut[8];
+
+    src[0] = 0; src[1] = 1; src[2] = 2;
+
+    /* RGB565: 0xF800 is pure red, 0x07E0 pure green, 0x001F pure blue. */
+    tlut[0] = 0xF8; tlut[1] = 0x00;
+    tlut[2] = 0x07; tlut[3] = 0xE0;
+    tlut[4] = 0x00; tlut[5] = 0x1F;
+    assert(!pc_texture_decode_tlut(PC_TF_CI8, 8, 4, src, sizeof src, tlut, 3,
+                                   PC_TL_RGB565, out, sizeof out));
+    pixel(out, 255, 0, 0, 255);
+    pixel(out + 4, 0, 255, 0, 255);
+    pixel(out + 8, 0, 0, 255, 255);
+
+    /* IA8 palette: high byte alpha, low byte intensity. */
+    tlut[0] = 0x80; tlut[1] = 0x40;
+    assert(!pc_texture_decode_tlut(PC_TF_CI8, 8, 4, src, sizeof src, tlut, 3,
+                                   PC_TL_IA8, out, sizeof out));
+    pixel(out, 0x40, 0x40, 0x40, 0x80);
+
+    /* RGB5A3 palette, opaque form: top bit set, five bits per channel. */
+    tlut[0] = 0xFF; tlut[1] = 0xFF;
+    assert(!pc_texture_decode_tlut(PC_TF_CI8, 8, 4, src, sizeof src, tlut, 3,
+                                   PC_TL_RGB5A3, out, sizeof out));
+    pixel(out, 255, 255, 255, 255);
+
+    /* CI4 packs two indices per byte, high nibble first. */
+    {
+        unsigned char c4[32] = {0};
+        unsigned char wide[8 * 8 * 4];
+        c4[0] = 0x01;
+        tlut[0] = 0xF8; tlut[1] = 0x00;
+        tlut[2] = 0x00; tlut[3] = 0x1F;
+        assert(!pc_texture_decode_tlut(PC_TF_CI4, 8, 8, c4, sizeof c4, tlut, 2,
+                                       PC_TL_RGB565, wide, sizeof wide));
+        pixel(wide, 255, 0, 0, 255);
+        pixel(wide + 4, 0, 0, 255, 255);
+    }
+
+    /* An index past the end of the loaded palette is malformed data and must
+       fail the decode rather than produce an invented colour. */
+    src[0] = 5;
+    assert(pc_texture_decode_tlut(PC_TF_CI8, 8, 4, src, sizeof src, tlut, 3,
+                                  PC_TL_RGB565, out, sizeof out) == -1);
+    /* A palette is required for CI formats and rejected for the others. */
+    src[0] = 0;
+    assert(pc_texture_decode(PC_TF_CI8, 8, 4, src, sizeof src, out,
+                             sizeof out) == -1);
+    assert(pc_texture_decode_tlut(PC_TF_I8, 8, 4, src, sizeof src, tlut, 3,
+                                  PC_TL_RGB565, out, sizeof out) == -1);
+    assert(pc_texture_is_paletted(PC_TF_CI4));
+    assert(pc_texture_is_paletted(PC_TF_CI8));
+    assert(pc_texture_is_paletted(PC_TF_CI14X2));
+    assert(!pc_texture_is_paletted(PC_TF_I8));
+
+    puts("PASS: CI4/CI8 through IA8, RGB565 and RGB5A3 palettes; a bad index "
+         "fails rather than guessing");
+}
+
 int main(void)
 {
-    test_formats(); test_cmpr(); test_tile_boundaries(); test_invalid();
+    test_formats();
+    test_paletted(); test_cmpr(); test_tile_boundaries(); test_invalid();
     puts("PASS: eight formats, GX CMPR rules, tile edges, bounds and guards");
     return 0;
 }

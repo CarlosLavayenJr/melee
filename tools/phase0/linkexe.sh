@@ -204,6 +204,7 @@ LDFLAGS="$LDFLAGS -Wl,--wrap=HSD_MObjLoadDesc -Wl,--wrap=HSD_TObjLoadDesc"
 LDFLAGS="$LDFLAGS -Wl,--wrap=HSD_TObjAddAnim -Wl,--wrap=HSD_TObjAddAnimAll"
 LDFLAGS="$LDFLAGS -Wl,--wrap=HSD_ArchiveParse -Wl,--wrap=lbArchiveRelocate"
 LDFLAGS="$LDFLAGS -Wl,--wrap=psInitDataBankLocate"
+LDFLAGS="$LDFLAGS -Wl,--wrap=GXLoadTlut"
 LDFLAGS="$LDFLAGS -Wl,--wrap=HSD_ArchiveGetPublicAddress"
 
 WRAPPED="GXBegin GXCallDisplayList GXLoadTexObj GXSetTevOrder GXSetProjection GXLoadPosMtxImm GXCopyDisp"

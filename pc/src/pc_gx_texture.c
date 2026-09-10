@@ -29,6 +29,64 @@ static size_t cached_bytes;
 static VkDeviceSize allocated_bytes;
 static VkCommandPool upload_pool;
 
+static void report(const char* reason);
+
+/* Palettes, recorded as the game loads them. A CI texture names a TLUT by
+   number in its GXTexObj; the palette itself lives wherever GXInitTlutObj was
+   pointed.
+ *
+ * The two SDK prototypes are restated here in plain types rather than pulled
+ * in from <dolphin/gx.h>, and the wrapper is guarded, because this file is
+ * also compiled standalone by pc/tests/run_texture_tests.ps1 with only
+ * -I pc/src and no game headers. GXTlutFmt is an enum, hence unsigned*.
+ * Decoding the TLUT object through GXGetTlutObjAll rather than reaching into
+ * its bitfields keeps the layout knowledge in the SDK where it belongs. */
+#define MAX_TLUTS 32
+static struct tlut_entry {
+    unsigned name, entries, format;
+    const unsigned char* data;
+    int used;
+} tluts[MAX_TLUTS];
+
+static const struct tlut_entry* find_tlut(unsigned name)
+{
+    unsigned i;
+    for (i = 0; i < MAX_TLUTS; ++i)
+        if (tluts[i].used && tluts[i].name == name) return &tluts[i];
+    return NULL;
+}
+
+#ifdef PC_GX_RENDERER
+void GXGetTlutObjAll(const void* tlut_obj, void** data, unsigned* format,
+                     unsigned short* numEntries);
+void __real_GXLoadTlut(void* obj, unsigned name);
+void __wrap_GXLoadTlut(void* obj, unsigned name)
+{
+    void* data = NULL;
+    unsigned fmt = 0;
+    unsigned short entries = 0;
+    unsigned i, slot = MAX_TLUTS;
+
+    __real_GXLoadTlut(obj, name);
+    if (!obj) return;
+    GXGetTlutObjAll(obj, &data, &fmt, &entries);
+    if (!entries) return;
+
+    for (i = 0; i < MAX_TLUTS; ++i) {
+        if (tluts[i].used && tluts[i].name == name) { slot = i; break; }
+        if (!tluts[i].used && slot == MAX_TLUTS) slot = i;
+    }
+    if (slot == MAX_TLUTS) { report("more distinct TLUTs than expected"); return; }
+    tluts[slot].used = 1;
+    tluts[slot].name = name;
+    tluts[slot].entries = entries;
+    tluts[slot].format = fmt;
+    /* GXGetTlutObjAll returns the physical address the register holds. */
+    tluts[slot].data = (const unsigned char*)
+        (uintptr_t) (((unsigned) (uintptr_t) data & 0x1FFFFFFFu) | 0x80000000u);
+}
+#endif
+
 static unsigned unsupported_format_counts[16];
 
 /* GX texture format codes, for the tally below. */
@@ -240,9 +298,12 @@ done:
     return result;
 }
 
-int pc_gx_texture_load(unsigned slot, unsigned format, unsigned width,
-                       unsigned height, unsigned levels, const void* source,
-                       size_t source_size, const VkSamplerCreateInfo* sampler)
+int pc_gx_texture_load_tlut(unsigned slot, unsigned format, unsigned width,
+                            unsigned height, unsigned levels,
+                            const void* source, size_t source_size,
+                            const void* tlut, unsigned tlut_entries,
+                            unsigned tlut_format,
+                            const VkSamplerCreateInfo* sampler)
 {
     VkBufferImageCopy regions[MAX_MIPS] = {{0}};
     size_t src_bytes = 0, dst_bytes = 0, offset = 0;
@@ -280,9 +341,15 @@ int pc_gx_texture_load(unsigned slot, unsigned format, unsigned width,
         size_t n;
         w = regions[m].imageExtent.width; h = regions[m].imageExtent.height;
         n = pc_texture_source_size(format, w, h);
-        if (pc_texture_decode(format, w, h, (const unsigned char*)source + offset, n,
-                              t->pixels + regions[m].bufferOffset, (size_t)w * h * 4)) {
-            destroy(t); return -1;
+        if (pc_texture_decode_tlut(format, w, h,
+                                   (const unsigned char*)source + offset, n,
+                                   tlut, tlut_entries, tlut_format,
+                                   t->pixels + regions[m].bufferOffset,
+                                   (size_t)w * h * 4)) {
+            destroy(t);
+            report(tlut ? "paletted decode failed (index past palette?)"
+                        : "texture decode failed");
+            return -1;
         }
         offset += n;
     }
@@ -307,6 +374,14 @@ int pc_gx_texture_load(unsigned slot, unsigned format, unsigned width,
     return 0;
 }
 
+int pc_gx_texture_load(unsigned slot, unsigned format, unsigned width,
+                       unsigned height, unsigned levels, const void* source,
+                       size_t source_size, const VkSamplerCreateInfo* sampler)
+{
+    return pc_gx_texture_load_tlut(slot, format, width, height, levels, source,
+                                   source_size, NULL, 0, 0, sampler);
+}
+
 int pc_gx_texture_load_obj_source(const void* obj, unsigned slot,
                                  const void* source, size_t source_size)
 {
@@ -315,6 +390,7 @@ int pc_gx_texture_load_obj_source(const void* obj, unsigned slot,
        memcpy avoids aliasing GXTexObj's opaque storage. */
     uint32_t words[8];
     unsigned w, h, f, levels = 1, dimension, lod, hw_filter;
+    const struct tlut_entry* palette = NULL;
     uint32_t physical;
     VkSamplerCreateInfo sampler = {0};
     static const VkSamplerAddressMode wraps[3] = {
@@ -328,11 +404,20 @@ int pc_gx_texture_load_obj_source(const void* obj, unsigned slot,
     w = (words[2] & 1023) + 1; h = ((words[2] >> 10) & 1023) + 1;
     f = words[5]; physical = (words[3] & 0x1fffff) << 5;
     if (!pc_texture_source_size(f, w, h)) {
-        /* Paletted/depth/copy formats require a separate implementation.
+        /* Depth and copy formats still need a separate implementation.
            Tallied by format code so it is possible to tell which one the
-           menu is actually asking for. */
+           caller is actually asking for. */
         if (f < 16) unsupported_format_counts[f]++;
-        report("GXLoadTexObj: unsupported format (palette/depth/copy)"); return -1;
+        report("GXLoadTexObj: unsupported format (depth/copy)"); return -1;
+    }
+    if (pc_texture_is_paletted(f)) {
+        /* words[6] is __GXTexObjInt::tlutName, set by GXInitTexObjTlut. */
+        palette = find_tlut(words[6]);
+        if (!palette) {
+            if (f < 16) unsupported_format_counts[f]++;
+            report("GXLoadTexObj: paletted texture names an unloaded TLUT");
+            return -1;
+        }
     }
     if ((words[0] & 3) > 2 || ((words[0] >> 2) & 3) > 2) {
         report("GXLoadTexObj: invalid wrap mode"); return -1;
@@ -375,8 +460,9 @@ int pc_gx_texture_load_obj_source(const void* obj, unsigned slot,
         static int warned;
         if (!warned++) report("anisotropy/bias clamp not implemented; using isotropic sampling");
     }
-    return pc_gx_texture_load(slot, f, w, h, levels,
-        source, source_size, &sampler);
+    return pc_gx_texture_load_tlut(slot, f, w, h, levels, source, source_size,
+        palette ? palette->data : NULL, palette ? palette->entries : 0,
+        palette ? palette->format : 0, &sampler);
 }
 
 int pc_gx_texture_load_obj(const void* obj, unsigned slot)
