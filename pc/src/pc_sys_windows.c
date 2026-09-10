@@ -31,6 +31,7 @@
 #include "pc_sys.h"
 
 #include <stdio.h>
+#include <string.h>
 #include <stdlib.h>
 #include <windows.h>
 
@@ -75,12 +76,13 @@ unsigned long long pc_sys_mono_ns(void)
  * reports what it cannot yet draw, and quietly losing them would be the kind
  * of silent wrong output the rest of the port goes out of its way to avoid.
  *
- * The comparison is by pointer, which is what makes it cheap and also what
- * makes it safe for the callers that build one line from several calls --
- * "pc_stage_data: ", a number, "\n" are three different pointers in sequence
- * and never collapse into each other.
+ * The callers that build one line from several calls are safe by
+ * construction: "pc_stage_data: ", a number and "\n" are three different
+ * messages in sequence, so none of them ever collapses into its neighbour.
+ * See the comparison itself below for why it reads the strings rather than
+ * comparing their addresses -- that shortcut was tried and lost data.
  */
-static const char* log_last;
+static char log_last[256];
 static unsigned long log_repeats;
 
 static void log_flush_repeats(void)
@@ -94,12 +96,43 @@ static void log_flush_repeats(void)
 
 void pc_sys_log(const char* s)
 {
-    if (s == log_last) {
+    size_t n;
+
+    if (s == NULL) {
+        return;
+    }
+    n = strlen(s);
+
+    /* Only whole lines are ever collapsed, and this restriction is the whole
+       correctness argument.
+     *
+       Plenty of callers build one line from several calls -- "pc_stage_data: ",
+       then a number, then "\n" -- and two earlier attempts here both broke on
+       that. Comparing pointers collapsed different numbers into each other,
+       because log_uint hands out an interior pointer into a local buffer that
+       is the same address every call. Comparing contents fixed that but still
+       collapsed fragments like "# " across unrelated lines, and printed the
+       repeat notice into the middle of a half-built line. The output was
+       worse than the spam: "Super Smash Bros. Mele  (previous line repeated 1
+       more times)".
+     *
+       A message that ends in a newline is a complete line on its own, which
+       is exactly the shape of the per-draw diagnostics this exists for --
+       pc_gx_fifo and pc_gx_material each emit theirs in a single call.
+       Fragments are passed straight through and never counted, so a line
+       assembled from pieces comes out byte for byte as before. */
+    if (n == 0 || s[n - 1] != '\n' || n >= sizeof log_last) {
+        log_flush_repeats();
+        log_last[0] = '\0';
+        fputs(s, stderr);
+        return;
+    }
+    if (strcmp(s, log_last) == 0) {
         log_repeats++;
         return;
     }
     log_flush_repeats();
-    log_last = s;
+    memcpy(log_last, s, n + 1);
     fputs(s, stderr);
 }
 
