@@ -208,16 +208,62 @@ miscompile in ways that look exactly like port bugs. `CFLAGS` is part of the
 object cache stamp, so switching modes forces a full rebuild rather than
 mixing objects.
 
+### A large part of it was orphaned processes, and that was my fault
+
+Before crediting `-O0` with all of it: the user reported **about twelve copies
+of `melee_host.exe` running at once**. Four orphaned `timeout.exe` wrappers
+were found, each still holding a `gdb` and a running game.
+
+They came from this session's own test batches. `TaskStop` kills the shell it
+started but **not the `timeout` process group underneath it**, so every batch
+stopped early left a game instance behind -- reading `game.iso`, holding a
+Vulkan swapchain, and competing for the CPU. Over a long session they piled
+up.
+
+That contention is almost certainly also what produced a stop that briefly
+looked like an `-O2` miscompile:
+
+    HSD_SynthSFXHeaderLoadCallback (result=529, length=0, addr=0x0)
+
+a DVD read returning nothing, which is what several processes reading the same
+`game.iso` would do, and which had **never appeared in any `-O0` run**.
+
+**Kill `timeout.exe`, not just `gdb.exe` and `melee_host.exe`**, when
+cleaning up after a stopped batch:
+
+```
+taskkill //F //IM timeout.exe //T; taskkill //F //IM gdb.exe //T; taskkill //F //IM melee_host.exe //T
+```
+
 ### The log was also costing more than it looks
 
 Not the main cause, but worth having fixed: `pc_sys_log` was `fputs(s,
 stderr)`, and stderr is unbuffered, so every diagnostic is a syscall the
 console then renders. `pc_gx_fifo`'s "incomplete immediate primitive" alone
 accounted for 159 of the 270 lines in a 74-frame run. It now collapses
-consecutive repeats of the same message and prints the count when the message
-changes or the process exits, so **nothing is lost** -- these lines are how
-the port reports what it cannot draw, and quietly dropping them would be the
-silent-wrong-output failure the rest of the port avoids.
+consecutive repeats and prints the count when the message changes or the
+process exits, so **nothing is lost** -- these lines are how the port reports
+what it cannot draw, and quietly dropping them would be the silent-wrong-output
+failure the rest of the port avoids.
+
+**It took three attempts, and the two failures are the interesting part,**
+because both produced output that was worse than the spam:
+
+- **Comparing pointers** looked cheapest and was wrong. `log_uint` writes its
+  digits into a local buffer and passes an interior pointer, so two *different*
+  numbers logged from the same call site arrive at the same address and
+  collapsed into each other.
+- **Comparing contents** fixed that and still broke, because plenty of callers
+  build one line from several calls -- `"pc_stage_data: "`, a number, `"\n"`.
+  Fragments like `"# "` collapsed across unrelated lines, and the repeat notice
+  printed into the middle of a half-built line:
+  `Super Smash Bros. Mele  (previous line repeated 1 more times)`.
+
+**The rule that works: only collapse a message that ends in a newline.** That
+is exactly the shape of the per-draw diagnostics this exists for -- `pc_gx_fifo`
+and `pc_gx_material` each emit theirs in one call -- while fragments pass
+straight through untouched and uncounted, so an assembled line comes out byte
+for byte as before.
 
 ### The menu graphics, and the CPU toggle
 
