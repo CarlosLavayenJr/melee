@@ -59,7 +59,44 @@ unsigned long long pc_sys_mono_ns(void)
                (unsigned long long) freq.QuadPart;
 }
 
-void pc_sys_log(const char* s) { fputs(s, stderr); }
+/* Consecutive repeats of the same message are collapsed and counted.
+ *
+ * stderr is unbuffered and every write to a Windows console is a syscall the
+ * console then has to render, so a diagnostic printed once per draw call
+ * costs far more than the drawing does. A user running a match reported
+ * about 15 fps, with pc_gx_fifo's "incomplete immediate primitive" and
+ * pc_gx_material's "draw skipped" lines repeating every frame -- hundreds of
+ * console writes per frame, for two messages that say the same thing each
+ * time.
+ *
+ * Nothing is dropped: when the message changes, the count of what was
+ * suppressed is printed first, so a log still says exactly how many times
+ * each thing happened. That matters because these lines are how this port
+ * reports what it cannot yet draw, and quietly losing them would be the kind
+ * of silent wrong output the rest of the port goes out of its way to avoid.
+ *
+ * The comparison is by pointer, which is what makes it cheap and also what
+ * makes it safe for the callers that build one line from several calls --
+ * "pc_stage_data: ", a number, "\n" are three different pointers in sequence
+ * and never collapse into each other.
+ */
+void pc_sys_log(const char* s)
+{
+    static const char* last;
+    static unsigned long repeats;
+
+    if (s == last) {
+        repeats++;
+        return;
+    }
+    if (repeats != 0) {
+        fprintf(stderr, "  (previous line repeated %lu more times)\n",
+                repeats);
+        repeats = 0;
+    }
+    last = s;
+    fputs(s, stderr);
+}
 
 void pc_sys_exit(int code) { exit(code); }
 

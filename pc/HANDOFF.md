@@ -290,7 +290,8 @@ Each of these is a byte-order schema, and each was found at a real line:
     struct member that does not exist, and swapping it byte-reversed the
     first word of the stage param table next door. See the section below;
     this one cost more runs than anything else in the port.
-10. **FIXED** With Onett the whole
+10. **FIXED** `gronett.c:480`, a NULL item passed to `grMaterial_801C8E08`.
+    With Onett the whole
     stage comes up and the stop moves into Onett's own setup: `gronett.c:480`
     passes a NULL item to `grMaterial_801C8E08`, because the cars' spawn
     returned NULL. Breaking on each of the four ways `Item_8026862C` can do
@@ -701,29 +702,52 @@ Two lessons worth more than the fix:
   not the fourteen struct-field swaps that run first. The write was invisible
   to the very diagnostic built to catch it.
 
-**CORRECTION, and this is the second time this stop has been called fixed too
-early.** It came back after the fix, on a stage the explanation above cannot
-account for:
+**The panic did come back after the fix -- and it turned out not to be a
+byte-order bug at all.** The run that produced it drew Mute City:
 
-    panicMissingStageParam (stkind=St_Kind_MuteCity, count=1)
+    TEST: stage param lookup failed, stkind=10 count=1 grkind=18
+      param=0x129e300 stage_params=0x129e280 stored_count=1
+      row 0: stkind=0x00000000 x4=0xffffffff
 
-`count=1` is the tell. The `x2C` bug byte-reversed **row 0 of a multi-row
-table** in an archive where `coll_data` happened to sit 0x2C before
-`stage_params`; it says nothing about a one-row table on a different stage.
-So there is at least one more cause, and what is fixed is one of them.
+`param=0x129e300` is not archive memory. Archive bodies live at
+0x80000000-0x81800000; this is in the executable's own data. `nm` puts
+`grDatFiles_803E0848` -- grdatfiles.c's **static fallback GroundParam** -- at
+0x83e300, and the run's load slide is 0xA60000 (computed from `stage_info`,
+which gdb resolved by name in the same backtrace): 0x83e300 + 0xA60000 =
+0x129e300 exactly.
 
-Two things make this cheap to pick up. `pc/tests/match_smoke.gdb` already
-dumps every row's `stkind` before giving up, so **the next Mute City run says
-immediately whether the single row is byte-reversed, is a plausible StKind
-that simply is not Mute City, or is something else entirely** -- three very
-different causes. And the tripwire is still armed and still reports, so if
-something writes that word during the load it will name the step, exactly as
-it did for `x2C`.
+So `grDatFiles_801C6038` took its `arg0 == NULL` branch: **no stage archive
+was loaded at all**, and the lookup searched the built-in dummy's single empty
+row. `Ground_801C0754` passes `stage_datas[grkind]->data1`, and
+`stage_datas[18]` is `grMc_StageData`, which was **one of the 34 placeholder
+symbols** -- a zeroed 4096-byte array standing in for a translation unit that
+did not compile. Nothing to do with byte order; the stage simply was not in
+the build.
 
-The discipline that should have been applied the first time and was not, twice
-now: **do not write FIXED for a stop that appears on a random stage until it
-has been absent across runs that drew several different stages.** The root
-cause being certain is not the same as the stop being gone.
+`grmutecity.c` now compiles and Mute City is a real stage: 1148 objects, 33
+placeholders, `grMc_StageData` gone from `todo.txt`. Two things were stopping
+it, and neither was subtle:
+
+- `grMuteCity_801EFC68` was declared `void(bool)` and assigned to a
+  `void(*)(int)` field that `ground.c:714` calls with an int. The function is
+  empty and ignores its argument, so `int` aligns all three with no change in
+  behaviour.
+- `grMuteCity_801F2AB0` is declared `s32` and never writes a return value,
+  which GCC refuses outright. **The value is not a guess**: every use is
+  `grMc_8049F4B8[car].x28 = grMuteCity_801F2AB0(...)`, and `x28` is only ever
+  set to 0 or tested against 0. `gen` is non-NULL exactly when the generator
+  was made, so returning it satisfies every consumer on both paths.
+
+**Worth checking the other 33 placeholders the same way.** A placeholder is
+not inert -- it is a zeroed array where code or a table should be, and this
+one spent a session masquerading as a byte-order bug on half the stages that
+drew Mute City. `build/phase2/todo.txt` lists them after every build.
+
+The discipline that should have been applied earlier, and now has been: **do
+not write FIXED for a stop that appears on a random stage until it has been
+absent across runs that drew several different stages.** Here that caution
+paid twice over -- the recurrence was real, and chasing it found a missing
+stage rather than the second byte-order bug it looked like.
 
 ### The tripwire, and why it beat five runs of range attribution
 

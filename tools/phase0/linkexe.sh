@@ -34,6 +34,7 @@ TRACE_GX=0
 TRACE_DVD=0
 RENDERER=0
 CLEAN=0
+OPTIMIZE=0
 ARGS=""
 for a in "$@"; do
   case "$a" in
@@ -41,6 +42,7 @@ for a in "$@"; do
     --trace-dvd) TRACE_DVD=1 ;;
     --renderer) RENDERER=1 ;;
     --clean) CLEAN=1 ;;
+    --fast) OPTIMIZE=1 ;;
     *) ARGS="$ARGS $a" ;;
   esac
 done
@@ -79,7 +81,25 @@ mkdir -p "$OUT/obj"
 # header to declare them; pc_ppc.c defines host equivalents, but nothing
 # declares them before use. Compiling stopped there rather than linking fine,
 # same as it always did -- this just un-upgrades the diagnostic.
-CFLAGS="$BITS -w -c -O0 -g -fgnu89-inline -fno-strict-aliasing -std=gnu17"
+# -O0 is the default because everything this port has done so far is
+# debugging, and -O0 -g is what makes a backtrace name the line it happened on
+# rather than a line the optimiser moved. It is also why the game runs at
+# around fifteen frames a second: a whole console game -- physics, collision,
+# the HSD scene graph, and the software half of the renderer -- with no
+# optimisation at all is typically several times slower than the same code at
+# -O2, and none of that is the renderer's fault.
+#
+# --fast builds the same sources at -O2 for actually playing. -g is kept, so
+# backtraces still carry symbols; they are just less exact about lines because
+# the optimiser reorders. -fno-strict-aliasing stays on in BOTH modes and is
+# not negotiable: the decomp type-puns constantly, and -O2 without it would
+# miscompile in ways that look like port bugs.
+if [ "$OPTIMIZE" = 1 ]; then
+  OPTFLAGS="-O2"
+else
+  OPTFLAGS="-O0"
+fi
+CFLAGS="$BITS -w -c $OPTFLAGS -g -fgnu89-inline -fno-strict-aliasing -std=gnu17"
 CFLAGS="$CFLAGS -Wno-error=implicit-function-declaration"
 # Same story for incompatible-pointer-types: also promoted to a hard error in
 # GCC 14+. Interrupt handlers get registered against `struct Foo*` in one

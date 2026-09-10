@@ -359,7 +359,7 @@ static struct grMc_YakumonoParam* yakumono_param;
 
 static s32 grMc_804D69D4;
 
-void grMuteCity_801EFC68(bool arg) {}
+void grMuteCity_801EFC68(int arg) {}
 
 void grMuteCity_801EFC6C(void)
 {
@@ -1910,7 +1910,7 @@ s32 grMuteCity_801F2AB0(s32 arg0, HSD_JObj* arg1)
         if ((appsrt = gen->appsrt) == NULL) {
             appsrt = psAddGeneratorAppSRT_begin(gen, 0);
             if (appsrt == NULL) {
-                return;
+                return 0;
             }
         }
         appsrt->xA2 = 0;
@@ -1920,6 +1920,13 @@ s32 grMuteCity_801F2AB0(s32 arg0, HSD_JObj* arg1)
         gen->type |= PSAPPSRT_UNK_B11;
         appsrt->gp = gen;
     }
+    /* The decomp gives this function an s32 return type and never writes one,
+       which GCC refuses outright. The value is not a guess: every use of it is
+       `grMc_8049F4B8[car].x28 = grMuteCity_801F2AB0(...)`, and x28 is only
+       ever set to 0 or tested against 0. `gen` is non-NULL exactly when the
+       generator was made, and NULL otherwise, so returning it satisfies every
+       consumer on both paths. */
+    return (s32) gen;
 }
 
 /// @copydoc mpLib_JointCollisionCallback
