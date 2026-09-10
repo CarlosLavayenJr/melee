@@ -135,34 +135,55 @@ Each of these is a byte-order schema, and each was found at a real line:
    not record its size -- see "Character attribute blocks" below. Kirby is
    converted; Jigglypuff and everyone else are reported and left alone.
 9. **OPEN, and now the biggest single blocker: "not found stage param".**
-10. **OPEN, on a stage that loads.** With Onett the whole stage comes up and
-    the stop moves into Onett's own setup: `gronett.c:480` passes
-    `gp->u.onettcar.car_items[i]` to `grMaterial_801C8E08`, and it is NULL --
-    `it_802E6AEC` -> `Item_80268B18` -> `Item_8026862C` returned NULL for the
-    cars. Three ways that happens: `Item_8026784C(hold_kind, kind)` refused
-    the spawn, `GObj_Create` or `HSD_ObjAlloc` ran out, or `Item_802682F0`
-    failed its bone-table allocation. Worth a probe: they are easy to tell
-    apart and the answer is probably another count -- `it_804D6D38` and the
-    article data behind `xC4_article_data->x10_modelDesc->x4_bone_count` both
-    come out of ItCo.dat and neither has a schema yet.
+10. **DIAGNOSED, fix written, NOT yet observed working.** With Onett the whole
+    stage comes up and the stop moves into Onett's own setup: `gronett.c:480`
+    passes a NULL item to `grMaterial_801C8E08`, because the cars' spawn
+    returned NULL. Breaking on each of the four ways `Item_8026862C` can do
+    that named the one in a single run:
 
-### FIXED: the stage-param stop was one object converted twice
+        ITEMNULL refused by Item_8026784C: hold=3 kind=160
 
-Every schema here claims the object it converts, and `grGroundParam` claimed
-the `GroundParam` but not the `stage_params` array behind it. Two GroundParams
-whose `stage_params` resolve to the same array therefore each converted it,
-and the second swap put it back exactly as it came off the disc -- which is
-why row 0 read as the original file bytes while the rest of the archive was
-fine, and why the claim mark on that word said nobody had touched it. The mark
-was on the GroundParam.
+    `hold_kind` 3 is the `It_PKind_Random` branch, which refuses when
+    `Item_804A0C64.x58 >= .x5C` -- a live count against a limit. The count is
+    zeroed at init; the limit is copied straight out of `ItemCommonData`,
+    which nothing converted. A byte-reversed limit is usually enormous and
+    would wave every spawn through, but a real value with bit 7 set reverses
+    into a **negative** s32, and then a live count of zero is already "at the
+    limit" and every spawn is refused. `pc/src/pc_it_data.c` converts it.
+    Three runs since have all stopped earlier, on other stages, so the fix
+    compiles and links but has not been seen to work.
 
-Claiming the array fixed it: three consecutive runs on random stages, none
-reporting "not found stage param", where roughly half had before.
+    `itPublicData` also names three `Article` tables and two more blocks and
+    **none of those are converted** -- expect them next.
 
-**The rule this makes explicit: claim the object you convert, not the object
-you reached it through.** Anything reachable from two owners needs its own
-claim, and an array behind a pointer is exactly that. Worth auditing the other
-schemas for the same shape.
+### STILL OPEN: the stage-param stop, and a correction
+
+`grGroundParam` claimed the `GroundParam` but not the `stage_params` array
+behind it, so two GroundParams resolving to the same array would each convert
+it and the second swap would undo the first. That is a real defect and the
+claim was added, because **the rule is right on its own merits: claim the
+object you convert, not the object you reached it through.** Anything
+reachable from two owners needs its own claim, and an array behind a pointer
+is exactly that. The other schemas are worth auditing for the same shape.
+
+**It did not fix the stop, and an earlier version of this file said it had.**
+That claim rested on three consecutive clean runs, which turned out to be
+luck. The tally since, all on random stages:
+
+    with the claim              3 runs, 0 stage-param failures
+    with the claim + ARAM carry 3 runs, 1 (that carry was reverted, below)
+    with the claim, later       3 runs, 2 (Temple 18 rows, Inishie1 9 rows)
+
+Two failures in six comparable runs. Before the claim it was roughly half, so
+six runs cannot even say whether the claim helped. Treat the stop as open and
+the double-conversion story as unproven: it explains the evidence but it has
+not been shown to be the cause.
+
+What is still solid, and worth not re-deriving: the DAT files are correct on
+disc (dumps below), no schema in this port claims the word before
+`pc_ground_param_to_native` runs, no archive body is re-marked over claimed
+words, and the post-conversion value is the original file bytes -- an even
+number of swaps.
 
 ### OPEN: provenance does not survive an ARAM transfer -- and carrying it made things worse
 

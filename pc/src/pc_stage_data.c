@@ -457,6 +457,8 @@ void pc_stage_itemdata_to_native(struct GroundItemData** table)
 void pc_hsd_particle_banks_to_native(void* cmd, void* tex, void* form);
 /* pc_ft_data.c. */
 void pc_ft_common_data_to_native(void* p);
+/* pc_it_data.c. */
+void pc_it_common_data_to_native(void* p);
 
 void* __real_HSD_ArchiveGetPublicAddress(HSD_Archive* archive,
                                          const char* symbols);
@@ -478,6 +480,9 @@ void* __wrap_HSD_ArchiveGetPublicAddress(HSD_Archive* archive,
             pc_hsd_particle_banks_to_native(p, NULL, NULL);
         } else if (strcmp(symbols, "map_texg") == 0) {
             pc_hsd_particle_banks_to_native(NULL, p, NULL);
+        } else if (strcmp(symbols, "itPublicData") == 0) {
+            /* ItCo.dat's shared item tables. pc_it_data.c. */
+            pc_it_common_data_to_native(p);
         } else if (strcmp(symbols, "ftLoadCommonData") == 0) {
             /* Not a stage, but this is the dispatch point: PlCo.dat's shared
                fighter tables arrive through the same door. pc_ft_data.c. */
