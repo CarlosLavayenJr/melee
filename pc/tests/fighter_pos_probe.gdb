@@ -42,14 +42,35 @@ up
 up
 up
 printf "  --- frame ftLib_80086A8C ---\n"
-set $fp = (Fighter*) gobj->user_data
-printf "  kind          = %d\n", $fp->kind
-printf "  cur_pos       = %f %f %f\n", $fp->cur_pos.x, $fp->cur_pos.y, $fp->cur_pos.z
-printf "  prev_pos      = %f %f %f\n", $fp->prev_pos.x, $fp->prev_pos.y, $fp->prev_pos.z
-printf "  self_vel      = %f %f %f\n", $fp->self_vel.x, $fp->self_vel.y, $fp->self_vel.z
-printf "  scale         = %f %f %f\n", $fp->x34_scale.x, $fp->x34_scale.y, $fp->x34_scale.z
-printf "  cam_box pos   = %f %f %f\n", $fp->x890_cameraBox->pos.x, $fp->x890_cameraBox->pos.y, $fp->x890_cameraBox->pos.z
-printf "  cam_box bone  = %f %f %f\n", $fp->x890_cameraBox->bone_pos.x, $fp->x890_cameraBox->bone_pos.y, $fp->x890_cameraBox->bone_pos.z
+set $ftr = (Fighter*) gobj->user_data
+printf "  kind          = %d\n", $ftr->kind
+printf "  cur_pos       = %f %f %f\n", $ftr->cur_pos.x, $ftr->cur_pos.y, $ftr->cur_pos.z
+printf "  prev_pos      = %f %f %f\n", $ftr->prev_pos.x, $ftr->prev_pos.y, $ftr->prev_pos.z
+printf "  self_vel      = %f %f %f\n", $ftr->self_vel.x, $ftr->self_vel.y, $ftr->self_vel.z
+printf "  scale         = %f %f %f\n", $ftr->x34_scale.x, $ftr->x34_scale.y, $ftr->x34_scale.z
+printf "  cam_box pos   = %f %f %f\n", $ftr->x890_cameraBox->pos.x, $ftr->x890_cameraBox->pos.y, $ftr->x890_cameraBox->pos.z
+printf "  cam_box bone  = %f %f %f\n", $ftr->x890_cameraBox->bone_pos.x, $ftr->x890_cameraBox->bone_pos.y, $ftr->x890_cameraBox->bone_pos.z
+# bone_pos is written by ftLib_800866DC as
+#   lb_8000B1CC(ftLib_80086630(gobj, attrs->camera_zoom_target_bone),
+#               &attrs->x170, v)
+# which is a bone's matrix times a fixed offset. The first run of this probe
+# showed cur_pos, prev_pos and self_vel all sane -- the fighter was falling
+# normally -- with only bone_pos NaN, so the fault is in one of those two
+# inputs. x170 and camera_zoom_target_bone both sit below
+# weight_independent_throws_mask at 0x180 and so are inside the range
+# attrs_to_native converts, which points at the bone matrix.
+printf "  zoom bone idx = %d\n", $ftr->co_attrs.camera_zoom_target_bone
+printf "  x170 offset   = %f %f %f\n", $ftr->co_attrs.x170.x, $ftr->co_attrs.x170.y, $ftr->co_attrs.x170.z
+set $bj = ftLib_80086630(gobj, $ftr->co_attrs.camera_zoom_target_bone)
+printf "  bone jobj     = %p\n", $bj
+if $bj != 0
+printf "  bone parent   = %p\n", $bj->parent
+printf "  bone translate= %f %f %f\n", $bj->translate.x, $bj->translate.y, $bj->translate.z
+printf "  bone scale    = %f %f %f\n", $bj->scale.x, $bj->scale.y, $bj->scale.z
+printf "  bone mtx r0   = %f %f %f %f\n", $bj->mtx[0][0], $bj->mtx[0][1], $bj->mtx[0][2], $bj->mtx[0][3]
+printf "  bone mtx r1   = %f %f %f %f\n", $bj->mtx[1][0], $bj->mtx[1][1], $bj->mtx[1][2], $bj->mtx[1][3]
+printf "  bone mtx r2   = %f %f %f %f\n", $bj->mtx[2][0], $bj->mtx[2][1], $bj->mtx[2][2], $bj->mtx[2][3]
+end
 quit 0
 end
 

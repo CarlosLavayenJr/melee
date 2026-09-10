@@ -6,7 +6,7 @@
 `gm_Scene_Vs_OnFrame` and reported `match_frames=1`, which is the first time
 any code inside a Melee match has run in this port. Getting there took two
 things: `ftData::x44`, the six bone indices the fighter's ECB is built from
-(stop 11.5, the first stop that was not stage-specific), and the resolution
+(stop 12, the first stop that was not stage-specific), and the resolution
 of the stage-param stop, which turned out to be a struct member that does not
 exist (stop 9).
 
@@ -20,14 +20,34 @@ rather than in front of it.
 
 Three stops sit in front of 400 frames right now:
 
-- **A fighter's own position going out of range at ~73 frames.** Same
-  `lbvector.c:383` assert as the camera bug, but through
-  `Camera_80030CD8`, which passes a subject's position straight in rather
-  than deriving one. So this is the fighter, not the camera.
-  `pc/tests/fighter_pos_probe.gdb` prints the position with the velocity and
-  the previous position, which separates "launched by wrong physics" from
-  "went NaN in one frame". Not yet run.
-- **The item animation script** (stop 13), the fourth hazard class and the
+- **A fighter's camera bone position going NaN at ~73 frames**, and the probe
+  has already narrowed it a long way. Same `lbvector.c:383` assert as the
+  camera bug but through `Camera_80030CD8`, which passes a subject's position
+  straight in. `pc/tests/fighter_pos_probe.gdb` says:
+
+      kind          = 12
+      cur_pos       = 39.102333 95.194946 0.000000
+      prev_pos      = 39.301395 95.634949 0.000000
+      self_vel      = -0.199062 -0.440000 0.000000
+      cam_box pos   = 39.102333 105.194946 0.000000
+      cam_box bone  = nan nan nan
+
+  **The physics are correct.** The fighter is falling normally, position and
+  previous position are a frame apart at exactly the velocity, and `pos` --
+  which `ftCamera_80076064` copies straight from `cur_pos` -- is right. Only
+  `bone_pos` is NaN, and that is written somewhere else entirely, by
+  `ftLib_800866DC`:
+
+      lb_8000B1CC(ftLib_80086630(gobj, attrs->camera_zoom_target_bone),
+                  &attrs->x170, v)
+
+  a bone's matrix times a fixed offset. Both inputs from the attribute block
+  are ruled in: `x170` is at 0x170 and `camera_zoom_target_bone` at 0x16C,
+  both below `weight_independent_throws_mask` at 0x180 and so inside the run
+  `attrs_to_native` converts. **That leaves the bone matrix**, and the probe
+  now prints it along with the bone's translate, scale and parent. Not yet
+  run at this checkpoint.
+- **The item animation script** (stop 15), the fourth hazard class and the
   first that is not byte order at all. **Deprioritised on the user's
   instruction to leave items for last**, and now diagnosed conclusively
   rather than inferred.
@@ -265,12 +285,12 @@ Each of these is a byte-order schema, and each was found at a real line:
    Jigglypuff and Yoshi have unnamed byte runs; Link and Young Link have a
    `SwordAttrs` and two `UNK_T`; Marth and Roy have a `SwordAttrs`; Samus has
    an `UNK_T`; Mewtwo has nested structs **and a bitfield**, which on this
-   target is a second hazard on top of byte order (see stop 13).
+   target is a second hazard on top of byte order (see stop 15).
 9. **FIXED** "not found stage param" -- `MapCollData::x2C` is an inferred
     struct member that does not exist, and swapping it byte-reversed the
     first word of the stage param table next door. See the section below;
     this one cost more runs than anything else in the port.
-10. **DIAGNOSED, fix written, NOT yet observed working.** With Onett the whole
+10. **FIXED** With Onett the whole
     stage comes up and the stop moves into Onett's own setup: `gronett.c:480`
     passes a NULL item to `grMaterial_801C8E08`, because the cars' spawn
     returned NULL. Breaking on each of the four ways `Item_8026862C` can do
@@ -313,7 +333,7 @@ Each of these is a byte-order schema, and each was found at a real line:
     other schema got there first) and the fix differs completely between
     them, so the log now names which by printing `pc_hsd_kind_at`.
 
-11.5 **FIXED** `lb_00B0.c:102`, `return jobj->parent` with `jobj` a garbage
+12. **FIXED** `lb_00B0.c:102`, `return jobj->parent` with `jobj` a garbage
     pointer (0x1a1a1a1a, 0x565e522f), reached from `Fighter_Create` through
     `mpColl_LoadECB_JObj`. `ft_80081B38` passes
     `bones[ft_data->x44->unk0].joint` and five more like it straight into
@@ -328,13 +348,13 @@ Each of these is a byte-order schema, and each was found at a real line:
     the Fighter by `ftCo_800D105C`, converted for the grGroundParam reason --
     they are all floats, floats do not fault, and they would never have
     announced themselves.
-11.6 **FIXED** `ftdynamics.c:96` segfault in `ftCo_8009CF84`,
+13. **FIXED** `ftdynamics.c:96` segfault in `ftCo_8009CF84`,
     `lb_8000FD48(fp->parts[bones->bone_id].joint, ..., bones->dyn_desc.count)`.
     `ftData::x2C->ftDynamicBones->array[]` was never converted, so both the
     bone index and the count were big-endian. This is the fighter-side
-    instance of stop 12 below, and the descriptor conversion is now shared
+    instance of stop 14 below, and the descriptor conversion is now shared
     between them -- `pc_dynamics_desc_to_native` in `pc_stage_data.c`.
-12. **FIXED** `lb_00F9.c:171` segfault, `prev->desc.lb_unk0.rotate =
+14. **FIXED** `lb_00F9.c:171` segfault, `prev->desc.lb_unk0.rotate =
     jobj->rotate` with `jobj` NULL, reached from Hyrule Castle's setup:
 
         lb_8000FD48 (jobj=0x0, desc=0x80841920, max_count=100663296)
@@ -353,7 +373,7 @@ Each of these is a byte-order schema, and each was found at a real line:
     stages use this (`dynamicsdata_flag3/4/6` on Hyrule Castle,
     `dynamicsdata_shipflag` on Rainbow Cruise), so the dispatch matches the
     prefix. See `pc_dynamics_desc_to_native` in `pc/src/pc_stage_data.c`.
-13. **OPEN, and a fourth hazard class: bitfield allocation order. PROVEN, not
+15. **OPEN, and a fourth hazard class: bitfield allocation order. PROVEN, not
     inferred** -- the diagnostic added for it printed the command word and the
     opcode read out of it both ways, in one run:
 
@@ -590,7 +610,7 @@ x = 1601. Fixed in `pc/src/pc_stage_data.c`; `check_array` and `head_wrote`
 now cover the true extent too.
 
 **That fix has been built and run, and the stop survives it.** Four runs
-after it: two stopped at the item script (stop 13) and two stopped here again,
+after it: two stopped at the item script (stop 15) and two stopped here again,
 at 3 match frames. The joint-pair extent was a real bug and is worth having --
 the arithmetic in `ground.c` is unambiguous and half that array really was
 left big-endian -- but **it is not the cause of this assert.**
@@ -1416,6 +1436,43 @@ about to be discarded. Validating at the point of use keeps the real
 protection: an oversized value there would overrun a frame buffer.
 
 ## Tests
+
+### The gdb probes, and the one rule that makes them work
+
+Five scripts in `pc/tests/` drive the scripted VS route and stop at a specific
+question rather than at whatever fails first. They are the reason four stops
+were diagnosed this checkpoint instead of guessed at.
+
+- `match_smoke.gdb` — the route itself, to 400 match frames. Reports how far
+  it got, and dumps the stage param rows before giving up.
+- `camera_box_probe.gdb` — the camera box, tolerance and range at the
+  `lbvector.c:383` refusal. Established that the box was healthy.
+- `camera_nan_probe.gdb` — the camera's own eye and interest vectors at the
+  same refusal. Found `game_camera.translation` NaN, which led to the
+  adjacent-globals bug.
+- `fighter_pos_probe.gdb` — the fighter's position, previous position and
+  velocity at the refusal that now ends matches around 73 frames. Separates a
+  fighter launched by wrong physics from one that went NaN in a frame.
+- `sss_geometry_probe.gdb` — the stage-select screen's measured positions,
+  for aiming the route at a named stage.
+
+**The rule: a breakpoint on an `HSD_ASSERT` line must carry the assert's own
+condition, negated.** The line is evaluated on every call, not only failing
+ones, so a bare line breakpoint stops on a healthy call — the first version of
+`camera_box_probe.gdb` did exactly that and printed a frame with no camera in
+it, which cost a run and looked briefly like evidence.
+
+Two more traps worth knowing, both of which cost a run here:
+
+- **`$fp` is a gdb register alias**, not a free convenience variable.
+  `set $fp = ...` fails with "Left operand of assignment is not an lvalue".
+- **`jobj->mtx` is only valid after `HSD_JObjSetupMatrix`.** `lb_8000B1CC` —
+  the function the game hit-tests with — calls it first. Read `mtx` without it
+  and every object reports the same stale root transform.
+
+And one process rule: **do not edit a gdb script while runs are using it.**
+Two runs in one batch here caught a file mid-write and died with parse errors
+that looked like real failures.
 
 `pc/tests/hsd_archive_test.c` — conversion happens exactly once and only when
 it should: header, tables and only relocation-named body words converted;
