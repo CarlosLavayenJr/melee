@@ -31,6 +31,9 @@ break __assert
 break abort
 break pc_sys_exit
 break OSPanic
+# ground.c's own "not found stage param" reporter ends in `while (true) {}`,
+# so without this the test hangs instead of failing.
+break panicMissingStageParam
 
 break mnCharSel_Scene_OnEnter
 commands

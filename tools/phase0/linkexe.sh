@@ -33,12 +33,14 @@ set -uo pipefail
 TRACE_GX=0
 TRACE_DVD=0
 RENDERER=0
+CLEAN=0
 ARGS=""
 for a in "$@"; do
   case "$a" in
     --trace-gx) TRACE_GX=1 ;;
     --trace-dvd) TRACE_DVD=1 ;;
     --renderer) RENDERER=1 ;;
+    --clean) CLEAN=1 ;;
     *) ARGS="$ARGS $a" ;;
   esac
 done
@@ -60,7 +62,11 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 OUT="${OUT:-$ROOT/build/phase2}"
 
 cd "$ROOT"
-rm -rf "$OUT"; mkdir -p "$OUT/obj"
+# The object cache survives between runs -- see the stamp check just before
+# "Compiling" below, which throws it away whenever the compiler, its flags or
+# the exclusion list change. Everything else under $OUT is rewritten every
+# run. --clean forces a full rebuild.
+mkdir -p "$OUT/obj"
 
 # -fgnu89-inline matches how MWCC treats the `extern inline` math helpers;
 # without it GCC emits one copy per translation unit and they collide.
@@ -240,9 +246,35 @@ fi
 
 EXCLUDE="${EXCLUDE_TRACE:-}${EXCLUDE_HOSTLIBC:-}"'dolphin/stub\.c|amcstubs|odemustubs|MetroTRK|dolphin/os/OS(Interrupt|Alarm|Time|Cache|Context|Reset|ResetSW|Thread)?\.c|MSL/printf\.c|dolphin/pad/pad\.c|dolphin/ar/ar\.c|dolphin/dsp/dsp(_task)?\.c|dolphin/dvd/dvdlow\.c'
 
+# True when $o has to be built: it does not exist, its dependency list does
+# not, or anything that list names is newer than it. -MMD writes that list and
+# leaves system headers out of it, which is what keeps this cheap.
+#
+# Conservative on purpose. Anything unreadable or missing means rebuild, so
+# the failure mode is a wasted compile rather than a stale object linked into
+# the binary -- which would be far worse here, where the whole point of a run
+# is to find out what the current source does.
+needs_rebuild() {
+  local o="$1" f="$2" dep
+  [ -f "$o" ] && [ -f "$o.d" ] || return 0
+  [ "$f" -nt "$o" ] && return 0
+  # Line 1 of a .d is "<target>: <deps...>", and on Windows the target is an
+  # absolute path whose drive letter carries a colon of its own -- so the
+  # target is dropped as the first whitespace-delimited token, not by cutting
+  # at the first colon.
+  for dep in $(sed -e '1s|^[^ ]*||' -e 's|\\$||' "$o.d"); do
+    [ -e "$dep" ] || return 0
+    [ "$dep" -nt "$o" ] && return 0
+  done
+  return 1
+}
+
 compile_one() {
   local f="$1" o inc
   o="$OUT/obj/${f//\//_}.o"
+  if ! needs_rebuild "$o" "$f"; then
+    return 0
+  fi
   # Files under pc/src are the port layer: host code, compiled against host
   # headers. Everything else is the decomp, compiled against its own.
   case "$f" in
@@ -250,16 +282,38 @@ compile_one() {
     *)        inc="$INCLUDES" ;;
   esac
   # shellcheck disable=SC2086
-  "$CC" $CFLAGS -include tools/phase0/compat.h $inc \
+  "$CC" $CFLAGS -MMD -MF "$o.d" -include tools/phase0/compat.h $inc \
     -DVERSION_GALE01 -DBUILD_VERSION=0 "$f" -o "$o" 2>/dev/null
+  echo x >> "$OUT/obj/.built"
 }
-export -f compile_one
+export -f compile_one needs_rebuild
 export CC CFLAGS INCLUDES INCLUDES_PC OUT FREESTANDING STUBFLAGS
 
+# The cache is only valid for the flags that produced it. Anything in this
+# string changing how a translation unit compiles throws the whole cache away,
+# because -MMD tracks headers and nothing else.
+STAMP="$OUT/obj/.flags"
+WANT_STAMP="$CC|$BITS|$CFLAGS|$INCLUDES|${INCLUDES_PC:-}|$STUBFLAGS|$EXCLUDE"
+if [ "$CLEAN" = 1 ] || [ ! -f "$STAMP" ] ||
+   [ "$(cat "$STAMP")" != "$WANT_STAMP" ]; then
+  rm -rf "$OUT/obj"; mkdir -p "$OUT/obj"
+fi
+printf '%s' "$WANT_STAMP" > "$STAMP"
+
+# Objects whose source is gone, or newly excluded, must not survive into the
+# link -- the response file below is a glob over this directory.
+find src extern pc/src -name '*.c' | grep -vE "$EXCLUDE" \
+  | sed "s|/|_|g; s|^|$OUT/obj/|; s|\$|.o|" | sort > "$OUT/obj.want"
+find "$OUT/obj" -name '*.o' | sort > "$OUT/obj.have"
+comm -13 "$OUT/obj.want" "$OUT/obj.have" | while read -r stale; do
+  rm -f "$stale" "$stale.d"
+done
+
 echo "Compiling ($CC $BITS)..."
+rm -f "$OUT/obj/.built"
 find src extern pc/src -name '*.c' | grep -vE "$EXCLUDE" \
   | xargs -P "$(nproc)" -I{} bash -c 'compile_one "$@"' _ {} >/dev/null 2>&1
-echo "  objects: $(find "$OUT/obj" -name '*.o' | wc -l)"
+echo "  objects: $(find "$OUT/obj" -name '*.o' | wc -l) (rebuilt $(wc -l < "$OUT/obj/.built" 2>/dev/null || echo 0), of which the ones that never compile are retried every run)"
 
 # Ask the linker which symbols are genuinely unresolved. Deriving this from nm
 # alone over-reports: it does not know the host libc supplies sinf, printf,
@@ -297,6 +351,9 @@ cd "$ROOT"
 # shellcheck disable=SC2086
 "$CC" $BITS -w -c $STUBFLAGS "$OUT/stubs.c" -o "$OUT/stubs.o"
 echo "Linking..."
+# $OUT survives between runs now, so the previous binary has to go first: a
+# failed link must not leave one behind for a test to run and believe.
+rm -f "$OUT/$OUTBIN"
 printf '%s\n' "$OUT"/obj/*.o "$OUT/stubs.o" | rsp_paths > "$OUT/objs.rsp"
 # shellcheck disable=SC2086
 if "$CC" $BITS -o "$OUT/$OUTBIN" "@$OUT/objs.rsp" $LDFLAGS 2>"$OUT/link.log"; then

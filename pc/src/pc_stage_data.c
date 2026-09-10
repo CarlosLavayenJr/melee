@@ -26,6 +26,7 @@
 #include "pc_hsd_endian.h"
 #include "pc_sys.h"
 
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -298,7 +299,26 @@ void pc_ground_param_to_native(GroundParam* p)
 {
     int i;
 
-    if (p == NULL || !pc_hsd_claim(p, sizeof *p, PC_HSD_GROUNDPARAM)) {
+    if (p == NULL) {
+        return;
+    }
+    if (!pc_hsd_claim(p, sizeof *p, PC_HSD_GROUNDPARAM)) {
+        /* Either already converted -- right, when the same archive is handed
+           out twice -- or memory the DVD path never marked as an archive
+           body. The second case leaves Ground_801C28CC searching a
+           byte-reversed stkind table, and it ends in
+           panicMissingStageParam's `while (true) {}` rather than a crash, so
+           nothing downstream would ever say what went wrong. Say it here. */
+        if (!pc_hsd_in_archive(p, sizeof *p)) {
+            static int warned;
+            if (!warned) {
+                warned = 1;
+                pc_sys_log("pc_stage_data: grGroundParam at ");
+                log_uint((u32) (uintptr_t) p);
+                pc_sys_log(" carries no archive provenance; its stage table "
+                           "is unconverted\n");
+            }
+        }
         return;
     }
     swap_f32(&p->y);
