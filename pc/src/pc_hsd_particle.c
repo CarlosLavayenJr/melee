@@ -30,6 +30,7 @@
 #include "pc_sys.h"
 
 #include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
 
 #include <sysdolphin/baselib/archive.h>
@@ -189,6 +190,22 @@ static void swap_cmd_bank(void* cmd)
     u32 version, count, first, i;
 
     if (!pc_hsd_claim(cmd, 12, PC_HSD_PSCMDBANK)) {
+        /* Either already converted, or not archive memory at all. The second
+           case means something handed us a bank this never saw loaded, and
+           psInitDataBankLoad will panic on its byte-reversed version -- so say
+           so here, where the address is still known, rather than leaving the
+           panic to be traced back by hand. */
+        if (!pc_hsd_in_archive(cmd, 12)) {
+            static int warned;
+            if (!warned) {
+                warned = 1;
+                pc_sys_log("pc_hsd_particle: command bank at ");
+                log_uint((u32) (uintptr_t) cmd);
+                pc_sys_log(" carries no archive provenance; version reads ");
+                log_uint(*(u16*) cmd);
+                pc_sys_log("\n");
+            }
+        }
         return;
     }
 

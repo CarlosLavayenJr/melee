@@ -76,6 +76,32 @@ rejected with the existing diagnostic rather than lit approximately.
 `GXLoadNrmMtxImm` is wrapped for the normal matrix, and `GX_VA_NRM` is now
 decoded (direct and indexed) instead of skipped.
 
+### Attract mode, and what the user confirmed by hand
+
+The user boots the exe normally and reports the menu appears AND navigates by
+keyboard. That is the first evidence of navigation working; the automated
+smoke test only ever established 240 frames of the main menu with a scripted
+Start press, so this is a real addition to what is known.
+
+Letting the movie run through into the attract-mode demo previously panicked
+at `particle.c:207`, "psInitDataBanks: unknown version". Cause: grdatfiles.c
+has two routes into the particle system, and the preloaded-archive one calls
+`psInitDataBankLoad` WITHOUT `psInitDataBankLocate`, so nothing converted the
+banks. Routing `map_ptcl`/`map_texg` through the
+`HSD_ArchiveGetPublicAddress` symbol hook covers both routes. After that,
+five consecutive normal runs reached the 130-second timeout with no failure.
+
+Do not read five clean runs as proof: the demo picks a stage at random and the
+panic was always stage-dependent (it was caught on `St_Kind_Zebes`). A
+diagnostic now fires if a command bank arrives without archive provenance,
+naming the address and the version it reads, so the next occurrence identifies
+itself instead of having to be traced back from the panic.
+
+Unaudited, seen in a normal run: `Cannot find symbol ainConEv_Top_matanim_joint`
+and `Cannot find symbol .` -- the second with an empty name, which suggests a
+symbol-table walk reading past its end rather than a genuinely missing symbol.
+Worth a look; it is a report, not a crash.
+
 ### What still gets discarded
 
      871  texcoord index beyond enabled texgen count
