@@ -755,10 +755,17 @@ static void emit_vertex(unsigned int* count, const float world_pos[3],
                         const float color[4], const float uv[2])
 {
     float clip_pos[3];
+    float tex[2];
     if (*count >= PC_MAX_VERTS) {
         return;
     }
     mtx_transform(pos_mtx, world_pos, clip_pos);
+    /* The post-transform texture matrix carries the texture's whole
+       scale/rotate/translate for ordinary sysdolphin materials, and the
+       generator feeding it is the identity, so applying it here to the
+       vertex's own TEX0 is exact rather than an approximation. */
+    tex[0] = uv[0]; tex[1] = uv[1];
+    pc_gx_texcoord_transform(tex);
     vertex_buf[*count].pos[0] = clip_pos[0];
     vertex_buf[*count].pos[1] = clip_pos[1];
     vertex_buf[*count].pos[2] = clip_pos[2];
@@ -766,7 +773,7 @@ static void emit_vertex(unsigned int* count, const float world_pos[3],
     vertex_buf[*count].color[1] = color[1];
     vertex_buf[*count].color[2] = color[2];
     vertex_buf[*count].color[3] = color[3];
-    memcpy(vertex_buf[*count].uv, uv, 2 * sizeof(float));
+    memcpy(vertex_buf[*count].uv, tex, 2 * sizeof(float));
     (*count)++;
 }
 

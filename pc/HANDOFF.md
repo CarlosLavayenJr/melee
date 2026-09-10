@@ -1,5 +1,84 @@
 # Handoff — September 10, 2026 checkpoint
 
+## Current blocker: menu draws rejected by raster channel, depth and blend
+
+The menu is still almost entirely black. What changed this session is that the
+reason is now measured rather than guessed, and the largest single cause is
+fixed. **No new menu graphics appeared** -- see "honest visual status".
+
+### Draw rejection is now counted, not just logged
+
+`pc_gx_material_report()` and `pc_gx_texture_report()` tally accepted draws and
+each skipped draw by reason; `pc/tests/menu_smoke.gdb` calls both at the end. One
+log line per reason was enough to notice a gap but not to rank it: a reason
+that kills every draw on screen looked exactly like one that kills a single
+stray draw. Before this, 74% of menu draws were being discarded with no way to
+tell which check mattered.
+
+### Fixed: post-transform texture matrices (the largest cause)
+
+Measured before: 20743 of 23713 skipped menu draws failed one lumped check,
+"texture order or non-identity texgen". Splitting it three ways showed the
+whole 20743 was specifically **non-identity texgen**, and recording the actual
+texgen configurations showed 17782 of them were one shape:
+
+    type=GX_TG_MTX2x4 src=GX_TG_TEX0 mtx=GX_IDENTITY norm=0 post=GX_PTTEXMTX0
+
+That is sysdolphin's normal textured material. `tobj.c:492`
+(`setupTextureCoordGen`) sets an identity 2x4 generator, and `tobj.c:488` loads
+the texture's entire scale/rotate/translate matrix as the **post-transform**
+matrix via `HSD_TexMapID2PTTexMtx`. Ignoring the post-transform was therefore
+not a small approximation -- it discarded the whole UV transform of every
+ordinary textured draw.
+
+`pc_gx_material.c` now tracks post-transform matrices through a
+`GXLoadTexMtxImm` wrapper and applies them to the vertex TEX0 in
+`pc_gx_fifo.c`'s `emit_vertex`. Doing it on the CPU is exact here, not a
+shortcut: the generator feeding the post-transform is the identity, so the
+result is a pure function of the vertex texcoord and the matrix. Two stages
+sampling through texgens with different post-transforms are rejected with a
+new diagnostic, because only one uv per vertex reaches the shader.
+
+After: non-identity texgen fell from **20743 to 671**.
+
+### Honest visual status: the capture is unchanged
+
+`build/menu-smoke.bmp` after menu frame 120 still shows only "Solo Smash!" on
+black. Accepted draws barely moved, 7952 to 7876, because the 20743 draws that
+stopped failing the texgen check now fail the checks *behind* it instead. The
+texgen fix is a prerequisite -- without it those draws would be textured wrongly
+even once the rest passes -- but on its own it added no visible graphics. Do
+not describe it as a menu rendering improvement.
+
+### Measured priority for the next session
+
+Skips after the fix, in order (total 21179 against 7876 accepted):
+
+    7600  raster channel other than COLOR0 or ZERO
+    7033  depth comparison needs depth attachment
+    4280  blend factors other than source-alpha/inverse-source-alpha
+     867  texcoord index beyond enabled texgen count
+     671  non-identity texgen
+     602  more than four TEV stages
+     126  logic/subtract blending
+      95  CI4 and 95 CI8 texture loads
+
+1. **Raster channel.** `GXTev.c:376`'s `c2r[] = {0,1,0,1,0,1,7,5,6}` maps
+   GXChannelID to the BP field, so the rejected value is 1: channel 1
+   (`GX_COLOR1`/`GX_ALPHA1`/`GX_COLOR1A1`). Needs `GX_VA_CLR1` decoded into a
+   second vertex colour attribute -- `pc_gx_fifo.c` currently reads and
+   discards it to keep the stream aligned -- plus the channel control from
+   `GXSetChanCtrl` to know whether it comes from the vertex or from lighting,
+   plus shader work.
+2. **Depth attachment.** There is no depth image in the framebuffer at all.
+3. **Blend factors.** Only source-alpha/inverse-source-alpha are mapped.
+
+Items 1 and 3 need the fragment shader regenerated (`pc/shaders/regenerate.ps1`,
+which needs a 64-bit glslc; no 32-bit shaderc exists). Budget for that.
+
+`pc/tests/bmp_to_png.py` converts a capture for inline viewing. Captures stay
+under gitignored `build/` and are never committed.
+
 ## Latest checkpoint: main menu runs for 240 frames; rendering incomplete
 
 This section supersedes all checkpoints below. Opening-movie playback was

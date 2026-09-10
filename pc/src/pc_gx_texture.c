@@ -29,6 +29,34 @@ static size_t cached_bytes;
 static VkDeviceSize allocated_bytes;
 static VkCommandPool upload_pool;
 
+static unsigned unsupported_format_counts[16];
+
+/* GX texture format codes, for the tally below. */
+static const char* const format_names[16] = {
+    "I4", "I8", "IA4", "IA8", "RGB565", "RGB5A3", "RGBA8", "fmt7",
+    "CI4", "CI8", "CI14X2", "fmt11", "fmt12", "fmt13", "CMPR", "fmt15"
+};
+
+void pc_gx_texture_report(void)
+{
+    unsigned i;
+    for (i = 0; i < 16; ++i) {
+        if (!unsupported_format_counts[i]) continue;
+        {
+            char buf[11];
+            unsigned v = unsupported_format_counts[i];
+            int n = (int) sizeof buf - 1;
+            buf[n] = '\0';
+            do { buf[--n] = (char) ('0' + v % 10); v /= 10; } while (v && n > 0);
+            pc_sys_log("pc_gx_texture: ");
+            pc_sys_log(buf + n);
+            pc_sys_log(" x unsupported format ");
+            pc_sys_log(format_names[i]);
+            pc_sys_log("\n");
+        }
+    }
+}
+
 static void report(const char* reason)
 {
     /* Distinct diagnostics once each; a missing font can hit this thousands
@@ -300,7 +328,10 @@ int pc_gx_texture_load_obj_source(const void* obj, unsigned slot,
     w = (words[2] & 1023) + 1; h = ((words[2] >> 10) & 1023) + 1;
     f = words[5]; physical = (words[3] & 0x1fffff) << 5;
     if (!pc_texture_source_size(f, w, h)) {
-        /* Paletted/depth/copy formats require a separate implementation. */
+        /* Paletted/depth/copy formats require a separate implementation.
+           Tallied by format code so it is possible to tell which one the
+           menu is actually asking for. */
+        if (f < 16) unsupported_format_counts[f]++;
         report("GXLoadTexObj: unsupported format (palette/depth/copy)"); return -1;
     }
     if ((words[0] & 3) > 2 || ((words[0] >> 2) & 3) > 2) {

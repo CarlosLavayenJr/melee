@@ -33,4 +33,6 @@ int pc_gx_texture_get(unsigned slot, pc_gx_texture_binding* binding);
 void pc_gx_textures_begin_frame(void);
 /* Call while device still exists, after all frame work has completed. */
 void pc_gx_textures_shutdown(void);
+/* Diagnostic: how many loads each unsupported texture format cost. */
+void pc_gx_texture_report(void);
 #endif

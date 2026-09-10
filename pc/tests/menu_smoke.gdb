@@ -74,4 +74,8 @@ info locals
 quit 1
 end
 printf "PASS: 240 main-menu frames; visual completeness requires capture review\n"
+# Which unsupported GX state actually cost pixels over those frames, rather
+# than merely which reasons were seen at least once.
+call pc_gx_material_report()
+call pc_gx_texture_report()
 quit 0

@@ -10,6 +10,15 @@ static uint32_t bp[256], mask = 0xffffff;
 static uint32_t tev_registers[8];
 static uint32_t konst_registers[8];
 static int identity_texgen[8];
+/* A texgen this renderer can reproduce: an identity 2x4 generator reading the
+   vertex's own TEX0. The post-transform matrix is allowed to be anything,
+   because that is where sysdolphin puts the actual work -- see below. */
+static int simple_texgen[8];
+static unsigned texgen_post[8];
+/* GX_PTTEXMTX0..19, three apart. Only the first two rows matter for a 2x4
+   generator, whose third input component is 1. */
+static float pt_matrix[20][2][4];
+static int pt_loaded[20];
 void pc_gx_bp_write(unsigned int value)
 {
     unsigned reg = value >> 24;
@@ -22,22 +31,165 @@ void pc_gx_bp_write(unsigned int value)
     }
     mask = 0xffffff;
 }
+/* Distinct texgen configurations the game actually asks for, with counts.
+   Non-identity texgen is 87% of every skipped menu draw, and "non-identity"
+   covers a large space -- 2x4 vs 3x4, eight sources, a texture matrix, a
+   post-transform matrix, normalisation. Knowing which handful of those the
+   menu really uses is the difference between implementing a feature and
+   implementing GX. */
+static struct texgen_config {
+    unsigned type, src, matrix, normalize, post, count;
+} texgen_seen[24];
+static unsigned texgen_seen_count;
+
+static void note_texgen(unsigned type, unsigned src, unsigned matrix,
+                        unsigned normalize, unsigned post)
+{
+    unsigned i;
+    for (i = 0; i < texgen_seen_count; ++i) {
+        struct texgen_config* c = &texgen_seen[i];
+        if (c->type == type && c->src == src && c->matrix == matrix &&
+            c->normalize == normalize && c->post == post) {
+            c->count++;
+            return;
+        }
+    }
+    if (texgen_seen_count < 24) {
+        struct texgen_config* c = &texgen_seen[texgen_seen_count++];
+        c->type = type; c->src = src; c->matrix = matrix;
+        c->normalize = normalize; c->post = post; c->count = 1;
+    }
+}
+
+/* sysdolphin loads a texture's whole scale/rotate/translate matrix as the
+   POST-transform matrix and leaves the generator itself identity
+   (tobj.c:492 setupTextureCoordGen, tobj.c:488 GXLoadTexMtxImm with
+   tobj->mtxid, which HSD_TexMapID2PTTexMtx maps to GX_PTTEXMTX0..7). So
+   ignoring the post-transform is not a small approximation: it discards the
+   entire UV transform of every ordinary textured draw, which measured as
+   20743 of 23713 skipped menu draws. */
+void __real_GXLoadTexMtxImm(f32 mtx[][4], u32 id, GXTexMtxType type);
+void __wrap_GXLoadTexMtxImm(f32 mtx[][4], u32 id, GXTexMtxType type)
+{
+    if (id >= GX_PTTEXMTX0 && id < GX_PTIDENTITY &&
+        (id - GX_PTTEXMTX0) % 3 == 0) {
+        unsigned n = (id - GX_PTTEXMTX0) / 3;
+        if (n < 20) {
+            unsigned r, c;
+            for (r = 0; r < 2; ++r)
+                for (c = 0; c < 4; ++c) pt_matrix[n][r][c] = mtx[r][c];
+            pt_loaded[n] = 1;
+            (void) type; /* rows 0 and 1 are identical for 2x4 and 3x4 */
+        }
+    }
+    __real_GXLoadTexMtxImm(mtx, id, type);
+}
+
+/* The texcoord the current TEV stages sample through, or -1 when none does.
+   Stages that disagree are rejected in pc_gx_material_get; this is only
+   asked once that has passed. */
+static int active_texcoord(void)
+{
+    unsigned count = ((bp[0] >> 10) & 15) + 1, i, j;
+    for (j = 0; j < count && j < 4; ++j) {
+        unsigned tc = bp[0xc0 + j*2], ta = bp[0xc1 + j*2];
+        unsigned order = (bp[0x28 + j/2] >> ((j&1)*12)) & 1023;
+        for (i = 0; i < 4; ++i) {
+            unsigned c = (tc >> (i*4)) & 15, a = (ta >> (4+i*3)) & 7;
+            if (c == 8 || c == 9 || a == 4) return (int) ((order >> 3) & 7);
+        }
+    }
+    return -1;
+}
+
+int pc_gx_texcoord_transform(float uv[2])
+{
+    int coord = active_texcoord();
+    unsigned n;
+    float s, t;
+    if (coord < 0) return 0;
+    if (texgen_post[coord] == GX_PTIDENTITY) return 0;
+    n = (texgen_post[coord] - GX_PTTEXMTX0) / 3;
+    if (n >= 20 || !pt_loaded[n]) return 0;
+    /* A 2x4 generator's output is (s, t) with a third component of 1, and the
+       3x4 post-transform is applied to (s, t, 1, 1). */
+    s = uv[0]; t = uv[1];
+    uv[0] = pt_matrix[n][0][0] * s + pt_matrix[n][0][1] * t +
+            pt_matrix[n][0][2] + pt_matrix[n][0][3];
+    uv[1] = pt_matrix[n][1][0] * s + pt_matrix[n][1][1] * t +
+            pt_matrix[n][1][2] + pt_matrix[n][1][3];
+    return 1;
+}
+
 void __real_GXSetTexCoordGen2(GXTexCoordID, GXTexGenType, GXTexGenSrc, u32, GXBool, u32);
 void __wrap_GXSetTexCoordGen2(GXTexCoordID id, GXTexGenType type, GXTexGenSrc src,
                              u32 matrix, GXBool normalize, u32 post)
 {
-    if ((unsigned)id < 8) identity_texgen[id] = type == GX_TG_MTX2x4 &&
-        src == GX_TG_TEX0 && matrix == GX_IDENTITY && !normalize && post == GX_PTIDENTITY;
+    if ((unsigned)id < 8) {
+        identity_texgen[id] = type == GX_TG_MTX2x4 && src == GX_TG_TEX0 &&
+            matrix == GX_IDENTITY && !normalize && post == GX_PTIDENTITY;
+        simple_texgen[id] = type == GX_TG_MTX2x4 && src == GX_TG_TEX0 &&
+            matrix == GX_IDENTITY && !normalize;
+        texgen_post[id] = post;
+    }
+    note_texgen(type, src, matrix, normalize, post);
     __real_GXSetTexCoordGen2(id, type, src, matrix, normalize, post);
 }
+/* One log line per reason is enough to notice a gap, but not to prioritise
+   one: a reason that kills every draw on screen and one that kills a single
+   stray draw look identical. Count them, and count the draws that got
+   through, so "which unsupported feature is costing the picture" is a
+   measurement rather than a guess. pc_gx_material_report prints it. */
+static unsigned skip_counts[16];
+static const char* skip_reason[16];
+static unsigned draws_accepted;
+
 static int unsupported(unsigned bit, const char* reason)
 {
     static unsigned reported;
+    skip_counts[bit]++;
+    skip_reason[bit] = reason;
     if (!(reported & (1u << bit))) {
         reported |= 1u << bit;
         pc_sys_log("pc_gx_material: draw skipped: "); pc_sys_log(reason); pc_sys_log("\n");
     }
     return 0;
+}
+static void report_uint(unsigned v)
+{
+    char buf[11];
+    int i = (int) sizeof buf - 1;
+    buf[i] = '\0';
+    do { buf[--i] = (char) ('0' + v % 10); v /= 10; } while (v && i > 0);
+    pc_sys_log(buf + i);
+}
+void pc_gx_material_report(void)
+{
+    unsigned i, total = 0;
+    for (i = 0; i < 16; ++i) total += skip_counts[i];
+    pc_sys_log("pc_gx_material: draws accepted ");
+    report_uint(draws_accepted);
+    pc_sys_log(", skipped ");
+    report_uint(total);
+    pc_sys_log("\n");
+    for (i = 0; i < 16; ++i) {
+        if (!skip_counts[i]) continue;
+        pc_sys_log("  ");
+        report_uint(skip_counts[i]);
+        pc_sys_log(" x ");
+        pc_sys_log(skip_reason[i]);
+        pc_sys_log("\n");
+    }
+    for (i = 0; i < texgen_seen_count; ++i) {
+        struct texgen_config* c = &texgen_seen[i];
+        pc_sys_log("  texgen type=");   report_uint(c->type);
+        pc_sys_log(" src=");            report_uint(c->src);
+        pc_sys_log(" mtx=");            report_uint(c->matrix);
+        pc_sys_log(" norm=");           report_uint(c->normalize);
+        pc_sys_log(" post=");           report_uint(c->post);
+        pc_sys_log(" x");               report_uint(c->count);
+        pc_sys_log("\n");
+    }
 }
 static float signed11(unsigned v)
 {
@@ -67,6 +219,7 @@ static int resolve_konst(float out[4], unsigned kc, unsigned ka, int color, int 
 int pc_gx_material_get(pc_gx_material* out)
 {
     unsigned i, j, blend = bp[0x41];
+    int seen_coord = -1;
     memset(out, 0, sizeof *out);
     out->count = ((bp[0] >> 10) & 15) + 1;
     if (out->count > 4) return unsupported(0, "more than four TEV stages");
@@ -86,8 +239,25 @@ int pc_gx_material_get(pc_gx_material* out)
             ras |= c == 10 || c == 11 || a == 5;
             kc |= c == 14; ka |= a == 6;
         }
-        if (tex && (!(order & 64) || coord >= (bp[0] & 15) || !identity_texgen[coord]))
-            return unsupported(3, "texture order or non-identity texgen");
+        /* Split three ways deliberately: these have completely different
+           fixes, and lumped together they were 90% of every skipped menu
+           draw with no way to tell which one mattered. */
+        if (tex && !(order & 64))
+            return unsupported(12, "TEV stage samples a disabled texture");
+        if (tex && coord >= (bp[0] & 15))
+            return unsupported(13, "texcoord index beyond enabled texgen count");
+        if (tex && !simple_texgen[coord])
+            return unsupported(3, "non-identity texgen");
+        /* One uv per vertex reaches the shader, so two stages sampling
+           through texgens with different post-transforms cannot both be
+           right. Say so rather than silently using one of them. */
+        if (tex) {
+            if (seen_coord >= 0 && (unsigned) seen_coord != coord &&
+                texgen_post[seen_coord] != texgen_post[coord])
+                return unsupported(14, "stages need different post-transform "
+                                       "texture matrices");
+            seen_coord = (int) coord;
+        }
         if ((tex && (ta & 12)) || (ras && (ta & 3))) return unsupported(4, "TEV swap table");
         if ((tex || ras) && ((bp[0xf6] & 15) != 4 || (bp[0xf7] & 15) != 14))
             return unsupported(4, "non-identity TEV swap table");
@@ -115,6 +285,7 @@ int pc_gx_material_get(pc_gx_material* out)
     }
     out->compare = bp[0xf3];
     out->pipeline_key = (blend & 1) | ((blend >> 2) & 6) | (((bp[0] >> 14) & 3) << 3);
+    draws_accepted++;
     return 1;
 }
 #endif
