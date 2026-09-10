@@ -50,9 +50,11 @@ static void swap_s16(s16* p)
     *p = (s16) swap16((u16) *p);
 }
 
-static void swap_s32(int* p)
+/* s32 is `long` in this decomp, not `int`; same width on the 32-bit target,
+   but the pointer types are distinct and worth matching. */
+static void swap_s32(s32* p)
 {
-    *p = (int) swap32((u32) *p);
+    *p = (s32) swap32((u32) *p);
 }
 
 static void swap_f32(f32* p)
@@ -342,6 +344,14 @@ void pc_stage_itemdata_to_native(struct GroundItemData** table)
  * table names the objects in it, and a name tells us exactly which schema
  * applies. That is also the safest place to do it: the data has been parsed
  * and located, and it is being handed out for the first time. */
+/* pc_hsd_particle.c. Reached from here as well as from its own wrapper on
+   psInitDataBankLocate, because grdatfiles.c's preloaded-archive branch calls
+   psInitDataBankLoad WITHOUT Locate, so nothing else converts those banks and
+   Load panics on a byte-reversed version (particle.c:207). Converting when
+   the symbol is handed out covers both branches; whichever runs second finds
+   the work already claimed. */
+void pc_hsd_particle_banks_to_native(void* cmd, void* tex, void* form);
+
 void* __real_HSD_ArchiveGetPublicAddress(HSD_Archive* archive,
                                          const char* symbols);
 void pc_hsd_particle_banks_to_native(void* cmd, void* tex, void* form);
@@ -359,6 +369,10 @@ void* __wrap_HSD_ArchiveGetPublicAddress(HSD_Archive* archive,
             pc_ground_param_to_native((GroundParam*) p);
         } else if (strcmp(symbols, "itemdata") == 0) {
             pc_stage_itemdata_to_native((struct GroundItemData**) p);
+        } else if (strcmp(symbols, "map_ptcl") == 0) {
+            pc_hsd_particle_banks_to_native(p, NULL, NULL);
+        } else if (strcmp(symbols, "map_texg") == 0) {
+            pc_hsd_particle_banks_to_native(NULL, p, NULL);
         } else if (strcmp(symbols, "map_ptcl") == 0) {
             pc_hsd_particle_banks_to_native(p, NULL, NULL);
         } else if (strcmp(symbols, "map_texg") == 0) {

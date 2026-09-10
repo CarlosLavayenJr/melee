@@ -969,14 +969,21 @@ static void handle_draw(VkCommandBuffer cmd, reader_t* r, unsigned char cmd_byte
                     ar.overrun = 0;
                     read_color(&ar, vf->attrs[attr].type, c);
                 } else if (attr == GX_VA_NRM) {
+                    /* Indexed reads use their own bounded reader, so a short
+                       read here cannot desync the display list -- but the
+                       normal still has to come from the first three of
+                       however many components the format carries. */
                     reader_t ar;
+                    unsigned int nc = comp_cnt_count(attr, vf->attrs[attr].cnt);
                     ar.p = arr->base + (unsigned long) idx * arr->stride;
                     ar.end = ar.p + attr_direct_size(attr, vf);
                     ar.overrun = 0;
-                    nrm[0] = read_direct_component(&ar, vf->attrs[attr].type, vf->attrs[attr].frac);
-                    nrm[1] = read_direct_component(&ar, vf->attrs[attr].type, vf->attrs[attr].frac);
-                    nrm[2] = read_direct_component(&ar, vf->attrs[attr].type, vf->attrs[attr].frac);
-                    have_nrm = 1;
+                    if (nc >= 3) {
+                        nrm[0] = read_direct_component(&ar, vf->attrs[attr].type, vf->attrs[attr].frac);
+                        nrm[1] = read_direct_component(&ar, vf->attrs[attr].type, vf->attrs[attr].frac);
+                        nrm[2] = read_direct_component(&ar, vf->attrs[attr].type, vf->attrs[attr].frac);
+                        have_nrm = 1;
+                    }
                 }
                 continue;
             }
@@ -995,10 +1002,19 @@ static void handle_draw(VkCommandBuffer cmd, reader_t* r, unsigned char cmd_byte
             } else if (attr == GX_VA_CLR0) {
                 read_color(r, vf->attrs[attr].type, c);
             } else if (attr == GX_VA_NRM) {
-                nrm[0] = read_direct_component(r, vf->attrs[attr].type, vf->attrs[attr].frac);
-                nrm[1] = read_direct_component(r, vf->attrs[attr].type, vf->attrs[attr].frac);
-                nrm[2] = read_direct_component(r, vf->attrs[attr].type, vf->attrs[attr].frac);
-                have_nrm = 1;
+                /* GX_NRM_NBT/NBT3 pack nine components -- normal, binormal,
+                   tangent -- not three. Reading only the first three would
+                   leave six behind and desync everything after this vertex in
+                   the display list, so consume the real count and keep the
+                   normal. comp_cnt_count is the same table skip_direct used
+                   before this attribute was decoded at all. */
+                unsigned int nc = comp_cnt_count(attr, vf->attrs[attr].cnt), ci;
+                for (ci = 0; ci < nc; ++ci) {
+                    float v = read_direct_component(r, vf->attrs[attr].type,
+                                                    vf->attrs[attr].frac);
+                    if (ci < 3) nrm[ci] = v;
+                }
+                have_nrm = nc >= 3;
             } else {
                 skip_direct(r, attr, vf);
             }
