@@ -23,9 +23,36 @@ getting real work done. A six-run tally at this checkpoint drew five different
 ones, where a few hours earlier every run stopped in the same place. Two are
 newly seen and undiagnosed:
 
-- **`synth.c:160`**, `HSD_SynthSFXHeaderLoadCallback` with `addr=0x0` and
-  `length=0` -- a sound-effect header load that returned nothing. Twice in
-  six runs, both before the match started.
+- **`synth.c:160` -- FIXED, and it was hiding as something else entirely.**
+  `HSD_SynthSFXHeaderLoadCallback` asserts
+
+      Can't load SFX file; bank(id=2) buffer overflow.
+
+  on `hsd_SynthSFXBankHead[bankID+1] - hsd_SynthSFXBank[bankID] >=
+  hsd_SynthSFXLoadBuf[1]`. `hsd_SynthSFXLoadBuf` is a `static u32[8]` that
+  `HSD_SynthSFXLoadNewProc` reads 32 bytes straight into off the disc, so its
+  words are big-endian and every consumer treats them as sizes and counts.
+  The assert compares a real byte count against a byte-reversed one.
+
+  Converted at the top of the header callback, which is the one correct
+  place: it is the read's completion callback, so it runs exactly once per
+  read and before anything has looked at the buffer -- including
+  `HSD_SynthSFXSampleLoadCallback`, which reads the same words later.
+
+  **The reason this took so long to see is worth more than the fix.** In a
+  gdb batch these runs looked like *silent* exits: the log ended
+  mid-character-select and the process was gone with code 1, no breakpoint
+  hit, no message. Running the binary directly instead showed the whole
+  story -- `HSD_ASSERTREPORT` prints, `OSPanic` dumps a stack, and `PPCHalt`
+  ends the process. **`match_smoke.gdb` breaks on `__assert`, `abort`,
+  `pc_sys_exit` and `OSPanic`, and this path went through none of them in a
+  way gdb stopped on.** Add `break PPCHalt` to the smoke test: it is the
+  port's single hard-stop and it was catching nothing.
+
+  The general lesson: **when a gdb run ends with no stop and no output, run
+  the binary outside gdb before believing the silence.** Five of six runs in
+  one tally were this assert wearing a disguise, and it briefly looked like a
+  regression from an unrelated change.
 - **`particle.c:330`**, a segfault in `psInitDataBank` with `bank=32` and a
   cmdBank at 0x80972ca0, which is heap rather than archive memory. Worth
   noting that **this is the path `--wrap` cannot reach**: `psInitDataBank`
