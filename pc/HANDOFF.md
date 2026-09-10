@@ -110,6 +110,18 @@ Each of these is a byte-order schema, and each was found at a real line:
    end of `Fighter_804D6540[kind]->x0` because its count `x4` came out of
    PlCo.dat byte-reversed. The tell was `part=256`: the scan found spurious
    matches in zeroed memory for every part number below that.
+6. **FIXED** `aobj.c:47` segfault, `HSD_AObjSetFlags(aobj = 0x3)` reached from
+   `grAnime_801C77FC` while Icicle Mountain set itself up. NOT a byte-order
+   bug -- see "the third hazard" below.
+7. **OPEN** On one run the stage was Mute City and `stage_info.param` pointed
+   into the executable's own image (0xb9c300), not game RAM, with
+   `stage_param_count` 1 and a single row of `stkind=0, x4=-1, x8=-1`. That
+   is `grDatFiles_803E0848`, the built-in default `grDatFiles_801C6038` uses
+   when it is handed a NULL filename -- but `grMc_StageData.data1` is
+   `"/GrMc.dat"`, so it should never have taken that branch.
+   `pc_ground_param_to_native` was never called for it, which fits: no
+   archive symbol was ever handed out. Worth resolving before trusting any
+   stage that reports "not found stage param".
 
 ## Fighter data: what is converted and what is not
 
@@ -166,6 +178,47 @@ this session. The objects are now named and the arithmetic kept under
 **When a new stop makes no sense, check this first.** The tell is a decomp
 expression that indexes past the end of one global, or adds a magic byte
 offset to one. `config/GALE01/symbols.txt` settles it in one grep.
+
+## The third hazard: a call that only worked because of the register ABI
+
+`grAnime_801C6F50` dispatches a callback by a small type code, and types 0, 4
+and 8 called it through `((Event) func)()` -- a pointer taking no arguments.
+Every function the tree passes there takes an `HSD_AObj*`: `fn_801C6EE4` and
+`fn_801C6F2C`. On PowerPC that is correct by accident, because `aobj` is
+already in r3 when the call is made and the callee finds it there. On a host
+ABI that passes arguments on the stack, nothing is pushed and the callee reads
+whatever was on it -- `HSD_AObjSetFlags` got `aobj = 0x3` and segfaulted while
+Icicle Mountain set itself up.
+
+The fix passes `aobj`, which is right on both and harmless to a callee that
+ignores it, since the caller cleans up. The original stays under `MUST_MATCH`.
+
+This is a third kind of hazard, distinct from byte order and adjacent globals,
+and it will not announce itself as clearly: **the tell is a call through a
+cast function pointer whose cast drops arguments the callee declares.**
+`sysdolphin`'s own `callbackForeachFunc` (aobj.c:262) does the same dispatch
+correctly -- it always passes `aobj` -- so that one is fine, and a grep for
+`((Event) func)()` finds only the three in granime.c today.
+
+## Iterating: the build is incremental now
+
+`tools/phase0/linkexe.sh` keeps `build/phase2/obj` between runs and skips a
+file whose object is newer than every prerequisite `-MMD` recorded. An
+unchanged tree rebuilds 29 objects -- the ones that have never compiled and
+are retried every run -- rather than 1175, so a cycle is about a minute
+instead of six. `--clean` forces a full rebuild, and the cache is thrown away
+by itself whenever the compiler, its flags or the exclusion list change.
+
+It is conservative on purpose: a missing object, a missing or unreadable
+dependency list, or a vanished header all mean rebuild. The failure mode is a
+wasted compile, never a stale object in a binary a test then believes.
+
+One trap, if this is ever changed: line 1 of a `.d` file is
+`<target>: <deps>`, and on Windows the target is an absolute path whose drive
+letter has a colon of its own. Cutting at the first colon leaves
+`/Users/...o:` behind as a dependency that never exists, and then every file
+rebuilds -- silently, and always, so it looks like the cache simply does not
+work.
 
 ## Previous September 10 checkpoint: the menu renders and navigates
 

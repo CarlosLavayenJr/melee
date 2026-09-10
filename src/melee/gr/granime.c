@@ -504,13 +504,29 @@ typedef void (*Callback1)(HSD_AObj* aobj, HSD_TObj* obj, u32 flags,
 typedef void (*Callback2)(HSD_AObj* aobj, int param);
 typedef void (*Callback4)(HSD_AObj* aobj, HSD_TObj* obj, u32 flags, int param);
 typedef void (*Callback3)(HSD_AObj* aobj, HSD_TObj* obj, int param);
+/* The type-0, 4 and 8 cases below call `func` through a pointer that takes
+   no arguments, and every function the tree actually passes there takes an
+   HSD_AObj* -- fn_801C6EE4 and fn_801C6F2C. On PowerPC that works by
+   accident: aobj is already in r3 when the call is made, so the callee
+   finds it. On a host ABI that passes arguments on the stack it is garbage,
+   and grAnime_801C77FC reached HSD_AObjSetFlags with aobj = 0x3 and
+   segfaulted while Icicle Mountain set itself up. Passing aobj is right on
+   both, and harmless to a callee that ignores it -- the caller cleans up.
+   Not a byte-order bug and not an adjacent-globals one: a third kind, where
+   the decomp is faithful to code that only worked because of the register
+   calling convention. */
+typedef void (*Callback0)(HSD_AObj* aobj);
 
 void grAnime_801C6F50(HSD_AObj* aobj, void* obj, u32 flags, void* func,
                       u32 type, void* param)
 {
     switch (type) {
     case 0:
+#ifdef MUST_MATCH
         ((Event) func)();
+#else
+        ((Callback0) func)(aobj);
+#endif
         break;
     case 1:
         ((Callback1) func)(aobj, obj, flags, *(float*) param);
@@ -522,10 +538,18 @@ void grAnime_801C6F50(HSD_AObj* aobj, void* obj, u32 flags, void* func,
         ((Callback2) func)(aobj, *(int*) param);
         break;
     case 4:
+#ifdef MUST_MATCH
         ((Event) func)();
+#else
+        ((Callback0) func)(aobj);
+#endif
         break;
     case 8:
+#ifdef MUST_MATCH
         ((Event) func)();
+#else
+        ((Callback0) func)(aobj);
+#endif
         break;
     case 5:
         ((Callback1) func)(aobj, obj, flags, *(float*) param);
