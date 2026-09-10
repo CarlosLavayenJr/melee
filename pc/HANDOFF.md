@@ -598,11 +598,28 @@ Each of these is a byte-order schema, and each was found at a real line:
     `Command_Execute` handles. Nothing here is a byte-order problem: the word
     is big-endian in memory and that is exactly how MWCC expects to find it.
 
-    **Deprioritised on the user's instruction ("we can leave items for
-    last"), and one route change would sidestep it entirely**: the item stop
-    only exists because items are on. The VS rules menu can turn them off
-    through the real menus -- no scene skipped, no state forced -- which takes
-    this whole class out of the way until the readers are rewritten.
+    **It is not an items problem, and that changed during this session.** The
+    item stop was deprioritised on the user's instruction ("we can leave items
+    for last"), and one route change would sidestep that half entirely -- the
+    VS rules menu can turn items off through the real menus, no scene skipped
+    and no state forced. But **the fighter subaction scripts are the same
+    stream and the same bitfields**, and a run now stops in one:
+
+        ftColl_8007B128 (fighter_gobj=..., bone_id=3, state=(unknown: 0x1010))
+          <- ftAction_80071A9C   <- ftAction_80073240
+          <- Fighter_ChangeMotionState (msid=42)
+          <- ftCo_Landing_Enter
+
+    `ftAction_80071A9C` reads `cmd->u->set_hurt_state.bone_idx` and `.state`
+    straight out of the command stream. The bone index came out plausible (3)
+    and the state came out as 0x1010, which is not a `HurtCapsule` state at
+    all -- two bitfields from the same word, one accidentally sane and one
+    not. This fires as soon as a fighter lands and runs its landing subaction,
+    which is roughly the first thing that happens in any match.
+
+    **So this work is on the critical path to a running match, not off to one
+    side with items.** Turning items off buys progress on one stop and none on
+    this one.
 
     `itanimlist.c:385` jumped to 0x000003e8 -- `it_803F22A8[opcode]` with a
     garbage opcode, reached from Corneria's setup through an item animation
