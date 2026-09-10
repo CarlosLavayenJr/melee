@@ -216,7 +216,7 @@ WRAPPED="GXBegin GXCallDisplayList GXLoadTexObj GXSetTevOrder GXSetProjection GX
 # calls are pc_gx_fifo.c's shadow state (pc/GX_RENDERER.md): a recorder has
 # no use for them either, since it never decodes what a display list's
 # bytes mean.
-RENDERER_ONLY="GXInit GXInitTexObj GXSetCopyClear GXSetVtxDesc GXClearVtxDesc GXSetVtxAttrFmt GXSetArray GXSetTexCoordGen2 GXLoadTexMtxImm"
+RENDERER_ONLY="GXInit GXInitTexObj GXSetCopyClear GXSetVtxDesc GXClearVtxDesc GXSetVtxAttrFmt GXSetArray GXSetTexCoordGen2 GXLoadTexMtxImm GXLoadNrmMtxImm"
 if [ "$TRACE_GX" = 1 ] || [ "$RENDERER" = 1 ]; then
   for w in $WRAPPED; do LDFLAGS="$LDFLAGS -Wl,--wrap=$w"; done
 fi

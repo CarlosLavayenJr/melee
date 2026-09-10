@@ -145,6 +145,46 @@ static void swap_vertices(HSD_VtxDescList* v)
     }
 }
 
+/* One vertex descriptor, not a list. swap_vertices above walks until
+   GX_VA_NULL, which is right for a pobj's own descriptor array but wrong for
+   a shape set: get_shape_vertex_xyz dereferences vertex_desc as a single
+   entry, and walking past it would claim whatever happens to follow. */
+static void swap_vertex_desc_single(HSD_VtxDescList* v)
+{
+    if (!v || !pc_hsd_claim(v, sizeof *v, PC_HSD_VERTEX)) {
+        return;
+    }
+    v->attr = swap32(v->attr);
+    v->attr_type = swap32(v->attr_type);
+    v->comp_cnt = swap32(v->comp_cnt);
+    v->comp_type = swap32(v->comp_type);
+    v->stride = swap16(v->stride);
+}
+
+/* Shape animation, which fighters use and the menu never did -- so this stayed
+   logged as unimplemented until a VS match asserted on it at pobj.c:842,
+   `vertex_buffer_size >= shape_set->nb_vertex_index`, with the count still
+   big-endian.
+
+   loadShapeSetDesc (pobj.c:253) copies these fields straight across, so
+   converting the descriptor here, before HSD_PObjLoadDesc runs, is enough.
+   The index lists are deliberately untouched: they are arrays of relocated
+   pointers, and the indices behind them are read a byte at a time in
+   big-endian order by get_shape_vertex_xyz (pobj.c:572), which is already
+   correct on either host. */
+static void swap_shape_set_desc(HSD_ShapeSetDesc* d)
+{
+    if (!d || !pc_hsd_claim(d, sizeof *d, PC_HSD_SHAPESET)) {
+        return;
+    }
+    d->flags = swap16(d->flags);
+    d->nb_shape = swap16(d->nb_shape);
+    d->nb_vertex_index = (s32) swap32((u32) d->nb_vertex_index);
+    d->nb_normal_index = (s32) swap32((u32) d->nb_normal_index);
+    swap_vertex_desc_single(d->vertex_desc);
+    swap_vertex_desc_single(d->normal_desc);
+}
+
 static void swap_pobj_desc(HSD_PObjDesc* p)
 {
     for (; p && pc_hsd_claim(p, sizeof *p, PC_HSD_POBJ); p = p->next) {
@@ -161,7 +201,7 @@ static void swap_pobj_desc(HSD_PObjDesc* p)
             }
         }
         if ((p->flags & 0x3000) == POBJ_SHAPEANIM)
-            pc_sys_log("pc_hsd_swap: shape animation descriptor conversion not implemented\n");
+            swap_shape_set_desc(p->u.shape_set);
     }
 }
 
