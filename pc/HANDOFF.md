@@ -150,11 +150,33 @@ Each of these is a byte-order schema, and each was found at a real line:
     would wave every spawn through, but a real value with bit 7 set reverses
     into a **negative** s32, and then a live count of zero is already "at the
     limit" and every spawn is refused. `pc/src/pc_it_data.c` converts it.
-    Three runs since have all stopped earlier, on other stages, so the fix
-    compiles and links but has not been seen to work.
+
+    This one is now **confirmed working, indirectly but decisively**: once
+    items could spawn at all, the run stopped one line further on, at the
+    first thing that reads a spawned item's data (stop 11). A stop that only
+    exists because items exist is proof the items exist.
 
     `itPublicData` also names three `Article` tables and two more blocks and
     **none of those are converted** -- expect them next.
+11. **FIXED** `itcoll.c:1021`, "item hit num over!" -- `ItHurtBoneList::count`
+    checked against 2, still big-endian. Converted in
+    `pc/src/pc_it_data.c` at `__wrap_it_8027163C`.
+
+    Two details worth carrying forward. The hook is on `it_8027163C` rather
+    than on `Item_80267978` where the `Article` is assigned, because
+    `Item_80267978` is called from inside its own translation unit and
+    `--wrap` only redirects references that cross one -- the same trap that
+    cost time on `grDatFiles_801C6228`. And the **list** is claimed, not the
+    `Article`: one `Article` serves every item of a kind, so the wrap runs
+    many times over the same list, and claiming the object actually converted
+    is what makes the second run a no-op.
+
+    Verified 3/3: three consecutive runs reached `gm_Scene_Vs_OnEnter` with
+    neither "item hit num over!" nor the schema's own "left byte-reversed"
+    diagnostic. That diagnostic is worth keeping -- `pc_hsd_claim` declines
+    quietly in two quite different situations (untracked memory, or some
+    other schema got there first) and the fix differs completely between
+    them, so the log now names which by printing `pc_hsd_kind_at`.
 
 ### STILL OPEN: the stage-param stop, and a correction
 
@@ -214,19 +236,47 @@ to name it.
 Inishie1, 9 rows -- it reported nothing, so the word is not inside anything
 that schema wrote.
 
-**But treat that as weak, not conclusive**, because the check could not
-distinguish "in none of the ranges" from "no ranges were recorded". The
-schema returns early when `map_head` is already claimed, which happens when a
-preloaded archive had its symbol fetched once before, and then the list is
-empty and the question was never really asked. `head_check` now prints the
-range count with its answer, so the next failing run says which it is. That
-build is in and links; the run has not happened.
+That answer was weak at first, because the check could not distinguish "in
+none of the ranges" from "no ranges were recorded" -- the schema returns early
+when `map_head` is already claimed, and then the list is empty and the
+question was never really asked. So `head_check` was made to print the range
+count alongside its answer.
 
-If the count comes back non-zero, the writer is somewhere else in that call
-entirely, and the next thing to look at is what else touches the archive
-between `map_head` and `grGroundParam` -- `grDatFiles_801C6228`, and the
-`coll_data` fetch that sits between them, whose schema walks vertex, line and
-joint arrays with counts out of the data.
+**The count has now come back, and it is comfortably non-zero.** Five runs
+that reached the check reported 45, 27, 23, 23 and 13 recorded ranges, and
+`stage_params[0]` was inside none of them. The negative is now real evidence:
+**`pc_stage_head_to_native` is exonerated.** The `coll_data` walks are
+recorded in the same list as of this checkpoint, so the same line now covers
+both schemas in that window.
+
+There is a second exoneration worth writing down, because it was cheap and it
+removes a suspect that looked likely. `pc_ground_param_to_native` prints the
+schema mark on `stage_params[0]` whenever it is not `0x80`, and **that line
+has never fired.** The array is unclaimed archive memory at the moment the
+schema takes it, so no other schema in this port claimed the word first, and
+the array is converted exactly once. Both halves of the double-conversion
+story are now ruled out.
+
+What remains, and what the watchpoint already said, is that **something is
+writing through a bad pointer** -- a pointer value and then a code address
+went into that word, which is not the shape of a byte swap. The next thing
+to look at is `grDatFiles_801C6228` and anything else that touches the
+archive between `map_head` and `grGroundParam`. The next diagnostic worth
+building is the reverse of `head_check`: rather than asking after the fact
+whose walk covered the word, watch the word itself from the moment the
+archive lands and name the writer at the instant it changes.
+
+The failure's own row dump is now wired up and costs nothing: the breakpoint
+on `panicMissingStageParam` in `pc/tests/match_smoke.gdb` prints every row's
+`stkind` before the test gives up, so the next failing run says whether one
+word is reversed, the whole array is, or the array is intact and the stage
+simply is not in it. Those three have completely different causes and the
+port has never actually distinguished them.
+
+One process note, learned the hard way: **do not edit the gdb script while
+runs are in flight.** Two of three runs in this checkpoint's batch caught the
+file mid-write and died with parse errors that looked like real failures
+(`Undefined command: "m->stage_params"`).
 
 ### OPEN: provenance does not survive an ARAM transfer -- and carrying it made things worse
 

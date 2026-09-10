@@ -32,8 +32,21 @@ break abort
 break pc_sys_exit
 break OSPanic
 # ground.c's own "not found stage param" reporter ends in `while (true) {}`,
-# so without this the test hangs instead of failing.
+# so without this the test hangs instead of failing. Its own OSReports would
+# list the rows, but they come after the point this stops at, so the same list
+# is printed here -- the rows themselves say whether one word is reversed, the
+# whole array is, or the array is fine and the stage simply is not in it.
 break panicMissingStageParam
+commands
+silent
+printf "TEST: stage param lookup failed, stkind=%d count=%d grkind=%d\n", stkind, count, stage_info.grkind
+printf "  param=%p stage_params=%p stored_count=%d\n", stage_info.param, stage_info.param->stage_params, stage_info.param->stage_param_count
+set $spi = 0
+while $spi < count
+printf "  row %d: stkind=0x%08x x4=0x%08x\n", $spi, stage_info.param->stage_params[$spi].stkind, stage_info.param->stage_params[$spi].x4
+set $spi = $spi + 1
+end
+end
 
 break mnCharSel_Scene_OnEnter
 commands

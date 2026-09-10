@@ -137,7 +137,7 @@ static void head_check(const void* p, const char* who)
             pc_sys_log(who);
             pc_sys_log(" at ");
             log_uint((u32) (uintptr_t) a);
-            pc_sys_log(" lies inside the map_head schema's ");
+            pc_sys_log(" lies inside the stage schemas' ");
             pc_sys_log(head_ranges[i].what);
             pc_sys_log(" walk, which starts at ");
             log_uint((u32) (uintptr_t) head_ranges[i].start);
@@ -146,7 +146,7 @@ static void head_check(const void* p, const char* who)
         }
     }
     /* Nothing matched -- but say how many ranges were on record, because
-       zero means the schema returned early (already claimed) and the
+       zero means every schema returned early (already claimed) and the
        question was never really asked. A negative answer from an empty
        list is not evidence. */
     pc_sys_log("pc_stage_data: ");
@@ -155,7 +155,7 @@ static void head_check(const void* p, const char* who)
     log_uint((u32) (uintptr_t) a);
     pc_sys_log(" is in none of the ");
     log_uint((u32) head_range_count);
-    pc_sys_log(" ranges the map_head schema recorded\n");
+    pc_sys_log(" ranges the stage schemas recorded\n");
 }
 
 void pc_map_coll_to_native(MapCollData* d)
@@ -187,6 +187,8 @@ void pc_map_coll_to_native(MapCollData* d)
     if (d->verts != NULL) {
         check_array(d->verts, d->vert_count, sizeof d->verts[0],
                     "vertex count");
+        head_wrote(d->verts, (size_t) d->vert_count * sizeof d->verts[0],
+                   "coll_data vertex");
         for (i = 0; i < d->vert_count; i++) {
             swap_f32(&d->verts[i].x);
             swap_f32(&d->verts[i].y);
@@ -195,6 +197,8 @@ void pc_map_coll_to_native(MapCollData* d)
 
     if (d->lines != NULL) {
         check_array(d->lines, d->line_count, sizeof d->lines[0], "line count");
+        head_wrote(d->lines, (size_t) d->line_count * sizeof d->lines[0],
+                   "coll_data line");
         for (i = 0; i < d->line_count; i++) {
             MapLine* l = &d->lines[i];
             l->v0_idx = swap16(l->v0_idx);
@@ -211,6 +215,8 @@ void pc_map_coll_to_native(MapCollData* d)
     if (d->joints != NULL) {
         check_array(d->joints, d->joint_count, sizeof d->joints[0],
                     "joint count");
+        head_wrote(d->joints, (size_t) d->joint_count * sizeof d->joints[0],
+                   "coll_data joint");
         for (i = 0; i < d->joint_count; i++) {
             MapJoint* j = &d->joints[i];
             swap_s16(&j->floor_start);
