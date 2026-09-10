@@ -279,7 +279,26 @@ Each of these is a byte-order schema, and each was found at a real line:
     stages use this (`dynamicsdata_flag3/4/6` on Hyrule Castle,
     `dynamicsdata_shipflag` on Rainbow Cruise), so the dispatch matches the
     prefix. See `pc_dynamics_desc_to_native` in `pc/src/pc_stage_data.c`.
-13. **OPEN, and a fourth hazard class: bitfield allocation order.**
+13. **OPEN, and a fourth hazard class: bitfield allocation order. PROVEN, not
+    inferred** -- the diagnostic added for it printed the command word and the
+    opcode read out of it both ways, in one run:
+
+        itanimlist.c:410: item command opcode 34 is outside the sixteen-entry
+                          handler table (raw opcode 44)
+                     word=1e00002c as-read=44 as-PowerPC-would-read=7
+
+    The word in memory is 0x1e00002c. This build reads the low six bits and
+    gets 44, which is off the end of a sixteen-entry table. PowerPC reads the
+    top six bits -- 0x1e >> 2 -- and gets **7**, a valid opcode that
+    `Command_Execute` handles. Nothing here is a byte-order problem: the word
+    is big-endian in memory and that is exactly how MWCC expects to find it.
+
+    **Deprioritised on the user's instruction ("we can leave items for
+    last"), and one route change would sidestep it entirely**: the item stop
+    only exists because items are on. The VS rules menu can turn them off
+    through the real menus -- no scene skipped, no state forced -- which takes
+    this whole class out of the way until the readers are rewritten.
+
     `itanimlist.c:385` jumped to 0x000003e8 -- `it_803F22A8[opcode]` with a
     garbage opcode, reached from Corneria's setup through an item animation
     script. The opcode is a bitfield:
