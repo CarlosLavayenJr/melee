@@ -146,7 +146,60 @@ Each of these is a byte-order schema, and each was found at a real line:
     article data behind `xC4_article_data->x10_modelDesc->x4_bone_count` both
     come out of ItCo.dat and neither has a schema yet.
 
-### The stage-param stop, and what is known about it
+### FIXED: the stage-param stop was one object converted twice
+
+Every schema here claims the object it converts, and `grGroundParam` claimed
+the `GroundParam` but not the `stage_params` array behind it. Two GroundParams
+whose `stage_params` resolve to the same array therefore each converted it,
+and the second swap put it back exactly as it came off the disc -- which is
+why row 0 read as the original file bytes while the rest of the archive was
+fine, and why the claim mark on that word said nobody had touched it. The mark
+was on the GroundParam.
+
+Claiming the array fixed it: three consecutive runs on random stages, none
+reporting "not found stage param", where roughly half had before.
+
+**The rule this makes explicit: claim the object you convert, not the object
+you reached it through.** Anything reachable from two owners needs its own
+claim, and an array behind a pointer is exactly that. Worth auditing the other
+schemas for the same shape.
+
+### OPEN: provenance does not survive an ARAM transfer -- and carrying it made things worse
+
+`ARStartDMA` copies bytes between main RAM and ARAM without going near the
+disc, and `pc_hsd_endian.c`'s marks -- one per word of main RAM, saying
+whether it is archive data and which schema converted it -- do not move with
+them. A buffer refilled from ARAM therefore holds one thing while its marks
+describe another. The diagnostic added for it says so in as many words:
+
+    pc_hsd_particle: command bank at 0x8132a0e0 is marked converted but its
+    version now reads 30; its bytes changed without the range being re-marked
+
+**That much is established.** What is not is the fix. Carrying the marks with
+the data -- a shadow byte per ARAM word, stored on the way out and restored on
+the way in -- was written, built and run three times, and the results were
+worse, so it was reverted rather than kept:
+
+    before the ARAM carry:  3 runs, 0 stage-param failures
+    with the ARAM carry:    3 runs, 1 stage-param failure, and 2 crashes on a
+                            garbage jobj in lb_00B0.c:102, a shape not seen
+                            before it
+
+Three runs each is a small sample and the stage is random, so this is
+suggestive rather than conclusive -- but it points the same way twice, and an
+unverified change that reintroduces a fixed stop is not worth keeping on
+reasoning alone. The likely reason is that restoring an "unclaimed archive"
+mark over a buffer lets a second conversion run on an object that was already
+converted, which is exactly the double-conversion the `stage_params` claim had
+just fixed.
+
+If this is picked up again: the diagnostic is still in place and still fires,
+so the bug is real and findable. A narrower fix than blanket mark-carrying is
+probably what it wants -- for instance forgetting the destination range on an
+ARAM read, which turns a silent double-conversion into a loud "no provenance"
+report rather than trying to reconstruct what the marks should say.
+
+### The stage-param stop, and what was known about it before the fix
 
 Roughly half of the random stages reach `gm_Scene_Vs_OnEnter` and stop in
 `Ground_801C28CC`, which searches `stage_info.param->stage_params[]` for a row
