@@ -80,6 +80,14 @@ int pc_gx_fifo_vtx_has_clr1(void)
     return vtx_desc[GX_VA_CLR1] != GX_NONE;
 }
 
+/* Whether the vertex stream supplies normals. GX lighting needs them, and
+   pc_gx_fifo.c skips GX_VA_NRM today, so this says whether implementing
+   lighting would also mean decoding a new attribute. */
+int pc_gx_fifo_vtx_has_nrm(void)
+{
+    return vtx_desc[GX_VA_NRM] != GX_NONE;
+}
+
 void __real_GXSetVtxDesc(GXAttr attr, GXAttrType type);
 void __wrap_GXSetVtxDesc(GXAttr attr, GXAttrType type)
 {

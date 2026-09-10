@@ -43,6 +43,21 @@ static struct chan_config {
 static unsigned chan_seen_count;
 static unsigned char chan_mat_color[4][4], chan_amb_color[4][4];
 
+/* The live control state per channel, so a rejected draw can be attributed to
+   the configuration actually in force rather than to a call count. GX's
+   combined ids set two channels at once: GX_COLOR0A0 is colour 0 and alpha 0,
+   GX_COLOR1A1 is colour 1 and alpha 1. */
+static struct chan_config chan_state[4];
+
+/* Rejected draws, tallied by the channel-1 configuration in force. */
+static struct draw_chan_tally {
+    struct chan_config cfg;
+    unsigned draws, with_nrm;
+} chan1_draws[8];
+static unsigned chan1_draw_count;
+
+static unsigned split_channels(unsigned chan, unsigned out[2]);
+
 void __real_GXSetChanCtrl(GXChannelID chan, GXBool enable, GXColorSrc amb_src,
                           GXColorSrc mat_src, u32 light_mask,
                           GXDiffuseFn diff_fn, GXAttnFn attn_fn);
@@ -65,27 +80,54 @@ void __wrap_GXSetChanCtrl(GXChannelID chan, GXBool enable, GXColorSrc amb_src,
         c->diff_fn = diff_fn; c->attn_fn = attn_fn; c->count = 1;
     }
 done:
+    {
+        unsigned targets[2], n = split_channels((unsigned) chan, targets), k;
+        for (k = 0; k < n; ++k) {
+            struct chan_config* c = &chan_state[targets[k]];
+            c->chan = targets[k]; c->enable = enable; c->amb_src = amb_src;
+            c->mat_src = mat_src; c->light_mask = light_mask;
+            c->diff_fn = diff_fn; c->attn_fn = attn_fn;
+        }
+    }
     __real_GXSetChanCtrl(chan, enable, amb_src, mat_src, light_mask, diff_fn,
                          attn_fn);
+}
+
+/* GX_COLOR0A0 and GX_COLOR1A1 address two channels at once, and they are how
+   sysdolphin usually sets these -- an earlier version of this only recorded
+   ids below 4 and so reported channel 1's colours as permanently black, which
+   was an artefact of the instrumentation rather than a fact about the game. */
+static unsigned split_channels(unsigned chan, unsigned out[2])
+{
+    switch (chan) {
+    case 0: case 1: case 2: case 3: out[0] = chan; return 1;
+    case 4: out[0] = 0; out[1] = 2; return 2; /* GX_COLOR0A0 */
+    case 5: out[0] = 1; out[1] = 3; return 2; /* GX_COLOR1A1 */
+    default: return 0;
+    }
+}
+
+static void store_chan_color(unsigned char dst[4][4], GXChannelID chan,
+                             GXColor c)
+{
+    unsigned targets[2], n = split_channels((unsigned) chan, targets), k;
+    for (k = 0; k < n; ++k) {
+        dst[targets[k]][0] = c.r; dst[targets[k]][1] = c.g;
+        dst[targets[k]][2] = c.b; dst[targets[k]][3] = c.a;
+    }
 }
 
 void __real_GXSetChanMatColor(GXChannelID chan, GXColor c);
 void __wrap_GXSetChanMatColor(GXChannelID chan, GXColor c)
 {
-    if ((unsigned) chan < 4) {
-        chan_mat_color[chan][0] = c.r; chan_mat_color[chan][1] = c.g;
-        chan_mat_color[chan][2] = c.b; chan_mat_color[chan][3] = c.a;
-    }
+    store_chan_color(chan_mat_color, chan, c);
     __real_GXSetChanMatColor(chan, c);
 }
 
 void __real_GXSetChanAmbColor(GXChannelID chan, GXColor c);
 void __wrap_GXSetChanAmbColor(GXChannelID chan, GXColor c)
 {
-    if ((unsigned) chan < 4) {
-        chan_amb_color[chan][0] = c.r; chan_amb_color[chan][1] = c.g;
-        chan_amb_color[chan][2] = c.b; chan_amb_color[chan][3] = c.a;
-    }
+    store_chan_color(chan_amb_color, chan, c);
     __real_GXSetChanAmbColor(chan, c);
 }
 
@@ -253,6 +295,18 @@ void pc_gx_material_report(void)
         report_uint(raster_ch1_no_clr1);
         pc_sys_log("\n");
     }
+    for (i = 0; i < chan1_draw_count; ++i) {
+        struct draw_chan_tally* d = &chan1_draws[i];
+        pc_sys_log("  ch1 draws ");   report_uint(d->draws);
+        pc_sys_log(" (with normals "); report_uint(d->with_nrm);
+        pc_sys_log(") lit=");         report_uint(d->cfg.enable);
+        pc_sys_log(" amb=");          report_uint(d->cfg.amb_src);
+        pc_sys_log(" mat=");          report_uint(d->cfg.mat_src);
+        pc_sys_log(" lights=");       report_uint(d->cfg.light_mask);
+        pc_sys_log(" diff=");         report_uint(d->cfg.diff_fn);
+        pc_sys_log(" attn=");         report_uint(d->cfg.attn_fn);
+        pc_sys_log("\n");
+    }
     for (i = 0; i < chan_seen_count; ++i) {
         struct chan_config* c = &chan_seen[i];
         pc_sys_log("  chan ");        report_uint(c->chan);
@@ -363,8 +417,25 @@ int pc_gx_material_get(pc_gx_material* out)
         if (ras && raster != 0 && raster != 7) {
             extern int pc_gx_fifo_vtx_has_clr1(void);
             if (raster == 1) {
+                extern int pc_gx_fifo_vtx_has_nrm(void);
+                const struct chan_config* live = &chan_state[1];
+                unsigned t;
                 if (pc_gx_fifo_vtx_has_clr1()) raster_ch1_with_clr1++;
                 else raster_ch1_no_clr1++;
+                for (t = 0; t < chan1_draw_count; ++t) {
+                    struct chan_config* c = &chan1_draws[t].cfg;
+                    if (c->enable == live->enable && c->amb_src == live->amb_src &&
+                        c->mat_src == live->mat_src &&
+                        c->light_mask == live->light_mask &&
+                        c->diff_fn == live->diff_fn &&
+                        c->attn_fn == live->attn_fn) break;
+                }
+                if (t == chan1_draw_count && chan1_draw_count < 8)
+                    chan1_draws[chan1_draw_count++].cfg = *live;
+                if (t < 8) {
+                    chan1_draws[t].draws++;
+                    if (pc_gx_fifo_vtx_has_nrm()) chan1_draws[t].with_nrm++;
+                }
             }
             return unsupported(9, "raster channel other than COLOR0 or ZERO");
         }

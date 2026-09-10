@@ -43,42 +43,59 @@ required. They did need the fixed 32-pipeline enumeration replaced with a
 64-entry cache keyed by GX state, built on demand; a full cache reports and
 skips rather than silently drawing through the wrong pipeline.
 
-### Current tally, and why the next step is NOT a vertex attribute
+### Current tally, and exactly what channel 1 is
 
-    7280  raster channel other than COLOR0 or ZERO
-     863  texcoord index beyond enabled texgen count
-     667  non-identity texgen
-     578  more than four TEV stages
-     123  logic/subtract blending
+    5920  raster channel other than COLOR0 or ZERO
+     844  texcoord index beyond enabled texgen count
+     648  non-identity texgen
+     464  more than four TEV stages
+      99  logic/subtract blending
 
 Raster channel 1 is the whole remaining story. The obvious reading -- "channel
 1 is a second vertex colour, decode `GX_VA_CLR1`" -- was measured and is
 WRONG. Instrumenting the vertex descriptor at every rejection gave:
 
-    of those, channel 1 with a vertex CLR1: 0, without: 7280
+    of those, channel 1 with a vertex CLR1: 0, without: 5920
 
-Not one of those draws supplies a second vertex colour. So channel 1 comes
-from the channel-control/lighting path. Instrumenting `GXSetChanCtrl` (channel
-ids are GXChannelID, colour sources GX_SRC_REG=0/GX_SRC_VTX=1) gave:
+Not one supplies a second vertex colour, so channel 1 comes from the
+channel-control path. Tallying rejected draws by the control state actually in
+force (not by call counts) gives a single configuration for all of them:
 
-    chan 1 lit=1 amb=0 mat=0 lights=12 diff=2 attn=0  x98
-    chan 5 lit=0 amb=0 mat=1 lights=0  diff=0 attn=2  x1
-    chan 1 mat rgba 0,0,0,0   amb rgba 0,0,0,0
+    ch1 draws 5920 (with normals 5846)
+        lit=1 amb=GX_SRC_REG mat=GX_SRC_REG lights=12
+        diff=GX_DF_CLAMP attn=GX_AF_SPEC
+    chan 1 mat rgba 255,255,255,255   amb rgba 0,0,0,0
 
-Channel 1 is configured with lighting ENABLED, a light mask, a diffuse
-function and attenuation, and its material and ambient registers are black.
-Only one call ever configures it unlit. So producing it needs real GX
-lighting -- `GXInitLightPos/Color/Attn`, `GXLoadLightObj`, the diffuse and
-attenuation functions, and per-vertex normals (`GX_VA_NRM`, currently skipped
-in `pc_gx_fifo.c`) -- plus a fragment shader change and SPIR-V regeneration.
-`glslc` exists at `C:/Users/Owner/msys64/mingw64/bin/glslc.exe`, and
-`pc/shaders/regenerate.ps1` already points at it, so the toolchain is not a
-blocker; the size of the feature is.
+So: lighting enabled, white material register, black ambient, lights 2 and 3
+(mask 12), clamped diffuse, specular attenuation, and normals present on
+5846 of 5920 draws.
 
-Those counts are per GXSetChanCtrl CALL, not per draw, so they say which
-configurations exist, not how many draws use each. Before building lighting,
-consider tallying it per rejected draw -- it is cheap and may show that a large
-share of the 7280 use one simple configuration.
+CORRECTION to an earlier note here: it previously said channel 1's material and
+ambient registers were black. That was an artefact of the instrumentation,
+which only recorded channel ids below 4 and so missed `GX_COLOR0A0` and
+`GX_COLOR1A1` -- the ids sysdolphin actually uses. The material colour is
+white. `split_channels` in pc_gx_material.c now normalises the combined ids.
+
+### The shape of the fix
+
+GX lighting is computed PER VERTEX, not per fragment. That matters: the
+lighting equation can live on the CPU in `emit_vertex`, next to the
+post-transform texgen work, where it is ordinary C that a standalone test can
+check -- rather than in SPIR-V. The shader then only needs one more input and
+a selector on the existing `stage.w`.
+
+Needed, in order:
+1. Light objects: wrap `GXLoadLightObj` (and the `GXInitLight*` setters, or
+   read the loaded object) for lights 2 and 3.
+2. Normals: `GX_VA_NRM` is read and discarded by `pc_gx_fifo.c` today; it has
+   to be decoded and transformed by the normal matrix.
+3. The GX_DF_CLAMP / GX_AF_SPEC equation, as a tested C function.
+4. A second vertex colour attribute carrying the result, and the shader
+   selecting it when the raster field is 1.
+
+Measure the loaded light objects before writing step 3 -- the same
+measure-then-implement order that has been right every time so far, including
+where it prevented decoding `GX_VA_CLR1` for nothing.
 
 `pc/tests/bmp_to_png.py` converts a capture for viewing. Captures stay under
 gitignored `build/` and are never committed.
