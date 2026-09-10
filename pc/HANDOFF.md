@@ -185,6 +185,36 @@ disc (dumps below), no schema in this port claims the word before
 words, and the post-conversion value is the original file bytes -- an even
 number of swaps.
 
+**A hardware watchpoint has now narrowed WHEN.** Set on
+`&stage_params[0].stkind` as soon as the address is known -- computed by
+walking `archive->public_info` in gdb, not by calling into the inferior, which
+matters because a gdb inferior call trips the watchpoint on its own scratch
+writes and sends you chasing `HSD_ArchiveGetPublicAddress`, which only reads:
+
+    EARLY archive=0x813a5500 gp=0x8134674c params=813464f4 row0=10000000
+
+`row0=10000000` is a host read of the bytes `00 00 00 10` -- big-endian 16,
+St_Kind_Yoster, **unconverted and correct** at the moment `map_head` is
+fetched. By the time `pc_ground_param_to_native` runs it reads `00000010`,
+i.e. host order. So the swap happens between those two points, and the only
+thing that runs between them is `pc_stage_head_to_native` -- this port's own
+`map_head` schema, on the `map_head` symbol fetch that precedes
+`grGroundParam` in `grDatFiles_801C6038`.
+
+The two writes the watchpoint caught in that window put a pointer
+(`0x813...`) and then what looks like a code address (`0x7c4bf2`) into that
+word, which is not the shape of a byte swap at all -- so something is writing
+through a bad pointer rather than converting. Frames were not reliable enough
+to name it.
+
+**Next experiment, and it is cheap:** `pc_stage_head_to_native` walks
+`d->unk0` (joint pairs), `d->unk8` (per-map entries, the newest addition) and
+`d->unk28` (MObj flags). Log the address range each walk is about to touch and
+compare against `stage_params`; or bisect by disabling one walk at a time.
+`check_array` only asks whether a range is inside the archive, and the archive
+is megabytes, so a walk with a wrong base or count stays "valid" while
+writing over a neighbour.
+
 ### OPEN: provenance does not survive an ARAM transfer -- and carrying it made things worse
 
 `ARStartDMA` copies bytes between main RAM and ARAM without going near the
